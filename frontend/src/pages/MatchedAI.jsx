@@ -13,16 +13,24 @@ export default function MatchedAI() {
     fetchData()
   }, [])
 
-  const [salaryMin, setSalaryMin] = useState(40000)
+  const [salaryMin, setSalaryMin] = useState(30000)
+  const [salaryMax, setSalaryMax] = useState(200000)
 
   const formatSalary = (val) => `$${Math.round(val / 1000)}k`
 
-  const handleSalaryChange = (e) => {
-    setSalaryMin(parseInt(e.target.value))
+  const handleSalaryMinChange = (e) => {
+    const newMin = parseInt(e.target.value)
+    if (newMin <= salaryMax) {
+      setSalaryMin(newMin)
+    }
   }
 
-  // Calculate fill percentage for visual track
-  const fillPercent = ((salaryMin - 20000) / (300000 - 20000)) * 100
+  const handleSalaryMaxChange = (e) => {
+    const newMax = parseInt(e.target.value)
+    if (newMax >= salaryMin) {
+      setSalaryMax(newMax)
+    }
+  }
 
   return (
     <div>
@@ -116,31 +124,60 @@ export default function MatchedAI() {
               maxWidth: '420px',
               display: 'flex',
               flexDirection: 'column',
-              gap: '8px',
+              gap: '12px',
               marginTop: '6px'
             }}>
               <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '12px' }}>
-                <label style={{ margin: 0, fontSize: '14px', color: 'var(--muted)' }}>Minimum salary</label>
-                <div style={{ fontSize: '13px', color: 'var(--muted)' }}>
-                  <span id="salaryLabel">{formatSalary(salaryMin)}+</span>
+                <label style={{ margin: 0, fontSize: '14px', color: 'var(--muted)', fontWeight: 500 }}>Salary Range</label>
+                <div style={{ fontSize: '13px', color: 'var(--muted)', fontWeight: 500 }}>
+                  <span id="salaryLabel">{formatSalary(salaryMin)} - {formatSalary(salaryMax)}</span>
                 </div>
               </div>
-              <div className="slider-wrap" style={{ position: 'relative', display: 'flex', alignItems: 'center', gap: '8px' }}>
-                <input
-                  type="range"
-                  id="salaryMin"
-                  name="salaryMin"
-                  min="20000"
-                  max="300000"
-                  step="5000"
-                  value={salaryMin}
-                  onChange={handleSalaryChange}
-                  className="range-input"
-                  aria-label="Minimum salary"
-                  style={{
-                    width: '100%'
-                  }}
-                />
+              
+              <div style={{ display: 'flex', flexDirection: 'column', gap: '10px' }}>
+                <div style={{ display: 'flex', alignItems: 'center', gap: '12px' }}>
+                  <label htmlFor="salaryMin" style={{ fontSize: '12px', color: 'var(--muted)', minWidth: '30px' }}>Min</label>
+                  <input
+                    type="range"
+                    id="salaryMin"
+                    name="salaryMin"
+                    min="10000"
+                    max="700000"
+                    step="5000"
+                    value={salaryMin}
+                    onChange={handleSalaryMinChange}
+                    className="range-input"
+                    aria-label="Minimum salary"
+                    style={{
+                      width: '100%'
+                    }}
+                  />
+                  <span style={{ fontSize: '12px', color: 'var(--muted)', minWidth: '50px', textAlign: 'right' }}>
+                    {formatSalary(salaryMin)}
+                  </span>
+                </div>
+
+                <div style={{ display: 'flex', alignItems: 'center', gap: '12px' }}>
+                  <label htmlFor="salaryMax" style={{ fontSize: '12px', color: 'var(--muted)', minWidth: '30px' }}>Max</label>
+                  <input
+                    type="range"
+                    id="salaryMax"
+                    name="salaryMax"
+                    min="10000"
+                    max="700000"
+                    step="5000"
+                    value={salaryMax}
+                    onChange={handleSalaryMaxChange}
+                    className="range-input"
+                    aria-label="Maximum salary"
+                    style={{
+                      width: '100%'
+                    }}
+                  />
+                  <span style={{ fontSize: '12px', color: 'var(--muted)', minWidth: '50px', textAlign: 'right' }}>
+                    {formatSalary(salaryMax)}
+                  </span>
+                </div>
               </div>
             </div>
 
