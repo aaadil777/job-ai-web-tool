@@ -268,6 +268,7 @@ function JobCard({ job }) {
       </div>
       <div style={{ display:'flex', gap:10, alignItems:'center', justifyContent:'flex-end', padding:'14px 20px', borderTop:'1px solid var(--border)', background:'transparent' }}>
         <a href="#" style={{ padding:'8px 12px', borderRadius:8, border:'1px solid var(--border)', background:'transparent', color:'var(--ink)' }}>View</a>
+        <button style={{ padding:'8px 12px', borderRadius:8, border:'1px solid var(--border)', background:'transparent', color:'var(--ink)' }}>Save</button>
         <button style={{ padding:'8px 12px', borderRadius:8, background:'var(--brand)', border:0, color:'#07120c', fontWeight:600 }}>Apply</button>
       </div>
     </article>
