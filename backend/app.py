@@ -38,7 +38,7 @@ def db_check():
     except Exception as e:
         return f"Database connection failed: {e}"
 
-# ✅ New route to fetch users
+## New route to fetch users
 @app.route('/users')
 def get_users():
     try:
