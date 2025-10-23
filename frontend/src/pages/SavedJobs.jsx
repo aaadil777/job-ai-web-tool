@@ -1,17 +1,21 @@
-import { useEffect } from 'react'
+import { useState, useEffect} from 'react'
 import { Link } from 'react-router-dom'
 import './jobAI.css'
 
 export default function SavedJobs() {
   useEffect(() => { document.title = 'Saved Jobs – jobhunter.ai' }, [])
 
-  // Placeholder for database/API fetch logic
+ // Placeholder for database/API fetch logic
   useEffect(() => {
-    async function fetchData() {
       // TODO: Insert API/database fetch call here
-    }
-    fetchData()
+      fetch("/mocks/savedjobs.json")
+        .then((response) => response.json())
+        .then((data) => setJobs(data))
   }, [])
+
+  const [jobs, setJobs] = useState([]);
+  
+  const formatSalary = (val) => `$${Math.round(val / 1000)}k`
 
   return (
     <div>
@@ -48,6 +52,7 @@ export default function SavedJobs() {
           <p className="text-muted-foreground">Jobs you marked to review or apply later.</p>
 
           <section id="savedList" className="jobs" style={{ width: '100vw', maxWidth: '100%', display: 'grid', gap: '14px', marginTop: '18px', boxSizing: 'border-box' }}>
+            {jobs.length === 0 && (
             <div id="savedEmpty" style={{
               display: 'none',
               padding: '36px',
@@ -63,9 +68,34 @@ export default function SavedJobs() {
                 </Link>
               </p>
             </div>
+            )}
+          {/* Populate job cards */}
+          {jobs.map((job,index) => (
+          <JobCard key={index} job={job} formatSalary={formatSalary}/>
+          ))}
           </section>
         </main>
       </div>
     </div>
   )
+}
+
+function JobCard({job, formatSalary}) {
+  return (
+  <div className="job-card">
+    <div className="job-card-header">
+      <h2 className="job-title">{job.title}</h2>
+      <div className="company-name-and-location-and-type">{job.company} - {job.location} || {job.type}</div>
+      <div className="skills">Skills: {job.skills.join(", ")}</div>
+      <div className="salary-range">Salary: {formatSalary(job.salaryMin)} - {formatSalary(job.salaryMax)}</div>
+      <div className='job-experience'>Experience Level: {job.experience}</div>
+      <div className="job-match-score">Match Score: <strong>{job.matchScore}%</strong></div>
+      <div style={{ display:'flex', gap:10, justifyContent:'flex-end', padding:'14px 20px'}}>
+        <button style={{ padding:'4px 12px'}}>View</button>
+        <button style={{ padding:'4px 12px'}}>Remove</button>
+        <button style={{ padding:'4px 12px'}}>Apply</button>
+      </div>
+    </div>
+  </div>
+);
 }
