@@ -1,17 +1,23 @@
-import { useState, useEffect } from 'react'
+import { useState, useEffect, useMemo } from 'react'
 import { Link } from 'react-router-dom'
 import './jobAI.css'
 
 export default function MatchedAI() {
+
   useEffect(() => { document.title = 'AI Matched Jobs – jobhunter.ai' }, [])
 
   // Placeholder for database/API fetch logic
   useEffect(() => {
-    async function fetchData() {
       // TODO: Insert API/database fetch call here
-    }
-    fetchData()
+      fetch("/mocks/jobs.json")
+        .then((response) => response.json())
+        .then((data) => setJobs(data))
   }, [])
+
+  const [jobs, setJobs] = useState([]);
+  const [type, setType] = useState("");
+  const [experience, setExp] = useState("");
+  const [location, setLoc] = useState("");
 
   const [salaryMin, setSalaryMin] = useState(30000)
   const [salaryMax, setSalaryMax] = useState(200000)
@@ -31,6 +37,20 @@ export default function MatchedAI() {
       setSalaryMax(newMax)
     }
   }
+
+  const filterJobs = useMemo(() => {
+    return jobs.filter(j => {
+      const jMin = j.salaryMin;
+      const jMax = j.salaryMax;
+
+      const passType = !type || j.type === type;
+      const passSalary = jMax >= salaryMin && jMin <= salaryMax;
+      const passExp = !experience || j.experience === experience;
+      const passLoc = !location || j.location === location;
+
+      return passType && passSalary && passExp && passLoc;
+    });
+    }, [jobs, type, experience, salaryMin, salaryMax, location]);
 
   return (
     <div>
@@ -94,6 +114,8 @@ export default function MatchedAI() {
               placeholder="Location (city, zip or Remote)"
               list="location-list"
               style={{ minWidth: '180px' }}
+              value={location}
+              onChange={(e) => setLoc(e.target.value)}
             />
             <datalist id="location-list">
               <option value="Remote" />
@@ -102,7 +124,7 @@ export default function MatchedAI() {
               <option value="Austin, TX" />
             </datalist>
 
-            <select name="type" className="filter-input" style={{ minWidth: '150px' }}>
+            <select name="type" className="filter-input" style={{ minWidth: '150px' }} value={type} onChange={(e) => setType(e.target.value)}>
               <option value="">Any type</option>
               <option>Full-time</option>
               <option>Part-time</option>
@@ -112,7 +134,7 @@ export default function MatchedAI() {
               <option>Internship</option>
             </select>
 
-            <select name="exp" className="filter-input" style={{ minWidth: '140px' }}>
+            <select name="exp" className="filter-input" style={{ minWidth: '140px' }} value={experience} onChange={(e) => setExp(e.target.value)}>
               <option value="">Experience</option>
               <option>Entry</option>
               <option>Mid</option>
@@ -200,9 +222,34 @@ export default function MatchedAI() {
             display: 'grid',
             gap: '14px',
             marginTop: '8px'
-          }}></section>
+          }}>
+          {/* Populate job cards */}
+          {filterJobs.map((job,index) => (
+          <JobCard key={index} job={job} formatSalary={formatSalary}/>
+          ))}
+          </section>
         </main>
       </div>
     </div>
   )
+}
+
+function JobCard({job, formatSalary}) {
+  return (
+  <div className="job-card">
+    <div className="job-card-header">
+      <h2 className="job-title">{job.title}</h2>
+      <div className="company-name-and-location-and-type">{job.company} - {job.location} || {job.type}</div>
+      <div className="skills">Skills: {job.skills.join(", ")}</div>
+      <div className="salary-range">Salary: {formatSalary(job.salaryMin)} - {formatSalary(job.salaryMax)}</div>
+      <div className='job-experience'>Experience Level: {job.experience}</div>
+      <div className="job-match-score">Match Score: <strong>{job.matchScore}%</strong></div>
+      <div style={{ display:'flex', gap:10, justifyContent:'flex-end', padding:'14px 20px'}}>
+        <button style={{ padding:'4px 12px'}}>View</button>
+        <button style={{ padding:'4px 12px'}}>Save</button>
+        <button style={{ padding:'4px 12px'}}>Apply</button>
+      </div>
+    </div>
+  </div>
+);
 }
