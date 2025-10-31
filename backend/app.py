@@ -1,20 +1,17 @@
 # backend/app.py
 from __future__ import annotations
-import os, re, json, random, string
+import os, re, random, string
 from datetime import datetime
 from typing import Any, Dict, List, Tuple
 
 from flask import Flask, request, jsonify
 from flask_cors import CORS
 from dotenv import load_dotenv
-
-# Optional MySQL
-import mysql.connector
 from werkzeug.utils import secure_filename
 
-# -----------------------------
+# -------------------------------------------------
 # Env & app
-# -----------------------------
+# -------------------------------------------------
 load_dotenv()
 app = Flask(__name__)
 
@@ -23,46 +20,17 @@ _allow = os.getenv("CORS_ALLOW_ORIGINS", "")
 origins = [o.strip() for o in _allow.split(",") if o.strip()]
 CORS(app, origins=origins or None, supports_credentials=True)
 
-# -----------------------------
-# DB helpers (uses your global connection style, but with safe fallback)
-# -----------------------------
-USE_DB = all(os.getenv(k) for k in ["DB_HOST", "DB_USER", "DB_NAME"])
-_db = None
-_cursor = None
-
-def get_db():
-    global _db, _cursor
-    if not USE_DB:
-        return None, None
-    try:
-        if _db is None or not _db.is_connected():
-            _db = mysql.connector.connect(
-                host=os.getenv("DB_HOST"),
-                user=os.getenv("DB_USER"),
-                password=os.getenv("DB_PASSWORD"),
-                database=os.getenv("DB_NAME"),
-                autocommit=True,
-            )
-            _cursor = _db.cursor(dictionary=True)
-        return _db, _cursor
-    except Exception as e:
-        app.logger.warning(f"MySQL unavailable, using memory store. Error: {e}")
-        return None, None
-
-# Try to connect once at startup (your original behavior)
-get_db()
-
-# -----------------------------
-# In-memory fallback store
-# -----------------------------
+# -------------------------------------------------
+# In-memory store (no MySQL)
+# -------------------------------------------------
 MEM = {
     "resumes": {},     # resume_id -> {"user_id":..., "text":..., "file_name":..., "name":..., "skills":[...]}
-    "jobs": {},        # job_id -> job dict
+    "jobs": {},        # job_id    -> job dict
     "next_resume_id": 1,
     "next_job_id": 1,
 }
 
-def _gen_id(prefix="J", n=6):
+def _gen_id(prefix="J", n=6) -> str:
     return prefix + "".join(random.choices(string.ascii_uppercase + string.digits, k=n))
 
 def ok(data: Dict[str, Any] | List[Any] | str = "ok", code: int = 200):
@@ -76,7 +44,7 @@ def bad(msg: str, code: int = 400):
 def _normalize_ws(s: str) -> str:
     return re.sub(r"\s+", " ", s or "").strip()
 
-# Simple skill extraction / scoring utilities
+# --- skill extraction / simple matching ---
 _BASE_SKILLS = {
     "python","sql","excel","power bi","tableau","snowflake","pandas","numpy","r",
     "java","javascript","react","node","api","rest","fastapi","flask",
@@ -124,57 +92,35 @@ def _make_cover_letter(candidate_name: str, job_title: str, company: str, matche
         f"Thank you for your time and consideration.\nSincerely,\n{who}"
     )
 
-# -----------------------------
-# Your original routes (kept)
-# -----------------------------
+# -------------------------------------------------
+# Routes
+# -------------------------------------------------
 @app.route("/")
 def home():
-    return "JobHunter.ai Backend Running Successfully!"
+    return "JobHunter.ai Backend Running Successfully! (in-memory mode)"
 
 @app.route("/db-check")
 def db_check():
-    db, cursor = get_db()
-    if not db:
-        return "Database connection not configured; using memory store."
-    try:
-        cursor.execute("SELECT DATABASE() AS db;")
-        result = cursor.fetchone()
-        return f"Connected successfully to database: {result['db']}"
-    except Exception as e:
-        return f"Database connection failed: {e}"
+    return "Database not configured; running in in-memory mode."
 
 @app.route("/users")
 def get_users():
-    db, cursor = get_db()
-    if not db:
-        return jsonify({"error": "DB not configured; no users table in memory mode"})
-    try:
-        cursor.execute("SELECT * FROM users;")
-        users = cursor.fetchall()
-        return jsonify(users)
-    except Exception as e:
-        return jsonify({"error": str(e)})
+    return jsonify({"error": "Users table not available in in-memory mode"})
 
-# -----------------------------
-# New routes (added)
-# -----------------------------
 @app.get("/api/health")
 def health():
-    db, _ = get_db()
     info = {
         "status": "ok",
         "time": datetime.utcnow().isoformat() + "Z",
-        "use_db": bool(db),
+        "use_db": False,
         "env": os.getenv("FLASK_ENV", "unknown"),
     }
     return ok(info)
 
-# POST /api/resumes  JSON {"text": "...", "meta":{"name":"...", "skills":[...], "experience":"..."}}
+# POST /api/resumes  JSON {"text":"...", "meta":{"name":"...", "skills":[...], "experience":"..."}}
 # or multipart 'file'
 @app.post("/api/resumes")
 def upload_resume():
-    db, cursor = get_db()
-
     if request.is_json:
         body = request.get_json(force=True) or {}
         text = _normalize_ws(body.get("text", ""))
@@ -186,24 +132,6 @@ def upload_resume():
             return bad("Provide 'text' or 'meta.experience' or upload a file")
 
         text_to_store = text or experience
-
-        if db:
-            try:
-                cursor.execute(
-                    "INSERT INTO resumes (user_id, resume_text, created_at) VALUES (%s, %s, NOW())",
-                    (None, text_to_store),
-                )
-                cursor.execute("SELECT LAST_INSERT_ID() AS id")
-                resume_id = cursor.fetchone()["id"]
-                # keep meta in memory even if DB does not have columns
-                MEM["resumes"][resume_id] = {
-                    "user_id": None, "text": text_to_store, "file_name": None,
-                    "name": name, "skills": u_skills, "experience": experience
-                }
-                return ok({"resume_id": resume_id})
-            except Exception as e:
-                app.logger.exception(e)
-
         rid = MEM["next_resume_id"]; MEM["next_resume_id"] += 1
         MEM["resumes"][rid] = {
             "user_id": None, "text": text_to_store, "file_name": None,
@@ -211,7 +139,6 @@ def upload_resume():
         }
         return ok({"resume_id": rid})
 
-    # file path
     if "file" not in request.files:
         return bad("No file part. Use 'file' field for upload or send JSON with 'text'")
     file = request.files["file"]
@@ -221,19 +148,6 @@ def upload_resume():
         text = content.decode("utf-8", errors="ignore")
     except Exception:
         text = ""
-
-    if db:
-        try:
-            cursor.execute(
-                "INSERT INTO resumes (user_id, resume_text, file_name, created_at) VALUES (%s, %s, %s, NOW())",
-                (None, text, fname),
-            )
-            cursor.execute("SELECT LAST_INSERT_ID() AS id")
-            resume_id = cursor.fetchone()["id"]
-            MEM["resumes"][resume_id] = {"user_id": None, "text": text, "file_name": fname, "name": "", "skills": [], "experience": ""}
-            return ok({"resume_id": resume_id})
-        except Exception as e:
-            app.logger.exception(e)
 
     rid = MEM["next_resume_id"]; MEM["next_resume_id"] += 1
     MEM["resumes"][rid] = {"user_id": None, "text": text, "file_name": fname, "name": "", "skills": [], "experience": ""}
@@ -281,26 +195,10 @@ def recommend():
     if not job_ids:
         return bad("Provide non-empty 'job_ids' array")
 
-    # fetch resume text (from DB if available, else memory)
-    db, cursor = get_db()
-    resume_text = ""
-    candidate_name = ""
-    user_listed_skills: List[str] = []
-
-    if db:
-        try:
-            cursor.execute("SELECT resume_text FROM resumes WHERE id=%s", (resume_id,))
-            row = cursor.fetchone()
-            if row:
-                resume_text = (row.get("resume_text") or "")
-        except Exception as e:
-            app.logger.exception(e)
-
-    if not resume_text:
-        r = MEM["resumes"].get(resume_id, {})
-        resume_text = r.get("text", "")
-        candidate_name = r.get("name", "") or ""
-        user_listed_skills = r.get("skills", []) or []
+    r = MEM["resumes"].get(resume_id, {})
+    resume_text = r.get("text", "")
+    candidate_name = r.get("name", "") or ""
+    user_listed_skills = r.get("skills", []) or []
     if not resume_text:
         return bad("Resume not found")
 
@@ -330,18 +228,16 @@ def recommend():
 
     return ok({"results": results})
 
-# -----------------------------
-# Chatbot blueprint (Gemini) — optional
-# -----------------------------
+# --- Optional: Gemini chat blueprint (requires GEMINI_API_KEY in env) ---
 try:
     from chat_api import chat_bp    # backend/chat_api.py
     app.register_blueprint(chat_bp)
 except Exception as e:
     app.logger.warning(f"Chat blueprint not loaded: {e}")
 
-# -----------------------------
+# -------------------------------------------------
 # Main
-# -----------------------------
+# -------------------------------------------------
 if __name__ == "__main__":
     port = int(os.getenv("PORT", "5000"))
     app.run(host="0.0.0.0", port=port, debug=True)
