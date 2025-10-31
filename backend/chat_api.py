@@ -17,6 +17,7 @@ Body:
 Response:
   {"text": "<assistant reply>"}
 """
+from typing import Optional
 
 import os
 from flask import Blueprint, request, jsonify
