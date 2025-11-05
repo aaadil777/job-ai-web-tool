@@ -1,56 +1,115 @@
-import { useState, useEffect, useMemo } from 'react'
+import { useState, useEffect, useMemo, useCallback } from 'react'
 import { Link } from 'react-router-dom'
 import './jobAI.css'
+import { searchJobs, getRecommendations } from '../api/api'
 
 export default function MatchedAI() {
-
   useEffect(() => { document.title = 'AI Matched Jobs – jobhunter.ai' }, [])
 
-  // Placeholder for database/API fetch logic
-  useEffect(() => {
-      // TODO: Insert API/database fetch call here
-      fetch("/mocks/jobs.json")
-        .then((response) => response.json())
-        .then((data) => setJobs(data))
-  }, [])
-
-  const [jobs, setJobs] = useState([]);
-  const [type, setType] = useState("");
-  const [experience, setExp] = useState("");
-  const [location, setLoc] = useState("");
+  const [jobs, setJobs] = useState([])
+  const [type, setType] = useState("")
+  const [experience, setExp] = useState("")
+  const [location, setLoc] = useState("")
+  const [searchQuery, setSearchQuery] = useState('data analyst')
 
   const [salaryMin, setSalaryMin] = useState(30000)
   const [salaryMax, setSalaryMax] = useState(200000)
+  const [page, setPage] = useState(1)
+  const [resultsPerPage, setResultsPerPage] = useState(10)
+  const [totalResults, setTotalResults] = useState(0)
 
-  const formatSalary = (val) => `$${Math.round(val / 1000)}k`
+  const formatSalary = (val) => `$${Math.round((val || 0) / 1000)}k`
 
   const handleSalaryMinChange = (e) => {
-    const newMin = parseInt(e.target.value)
-    if (newMin <= salaryMax) {
-      setSalaryMin(newMin)
-    }
+    const newMin = parseInt(e.target.value || 0)
+    if (newMin <= salaryMax) setSalaryMin(newMin)
+  }
+  const handleSalaryMaxChange = (e) => {
+    const newMax = parseInt(e.target.value || 0)
+    if (newMax >= salaryMin) setSalaryMax(newMax)
   }
 
-  const handleSalaryMaxChange = (e) => {
-    const newMax = parseInt(e.target.value)
-    if (newMax >= salaryMin) {
-      setSalaryMax(newMax)
-    }
+  const normalizeExperience = (expLevel) => {
+    if (!expLevel) return ''
+    const s = String(expLevel).toLowerCase()
+    if (s.includes('entry')) return 'Entry'
+    if (s.includes('mid')) return 'Mid'
+    if (s.includes('senior')) return 'Senior'
+    return expLevel
   }
+
+  const fetchJobs = useCallback(async (opts = {}) => {
+    const payload = {
+      query: opts.query ?? searchQuery ?? 'data analyst',
+      location: opts.location ?? location ?? '',
+      page: opts.page ?? page,
+      resultsPerPage: opts.resultsPerPage ?? resultsPerPage,
+      salaryMin: opts.salaryMin ?? salaryMin,
+      salaryMax: opts.salaryMax ?? salaryMax,
+      type: opts.type ?? type,
+      experience: opts.experience ?? (experience || ''),
+    }
+
+    try {
+      const data = await searchJobs(payload)
+
+      const mapped = (data.results || []).map((j) => ({
+        ...j,
+        experience: normalizeExperience(j.experience),
+        skills: Array.isArray(j.skills) ? j.skills : (j.skills || []),
+        salaryMin: j.salaryMin || 0,
+        salaryMax: j.salaryMax || 0,
+      }))
+
+      setJobs(mapped)
+
+      if (data) {
+        setPage(Number(data.page || 1))
+        setResultsPerPage(Number(data.resultsPerPage || resultsPerPage))
+        setTotalResults(Number(data.totalResults || 0))
+      }
+
+      const rid = parseInt(localStorage.getItem('resume_id') || '', 10)
+      if (rid && mapped.length) {
+        try {
+          const rec = await getRecommendations(rid, mapped.map((m) => m.job_id))
+          if (rec && Array.isArray(rec.results)) {
+            const scoresById = {}
+            rec.results.forEach((r) => { scoresById[r.job_id] = r })
+            const merged = mapped.map((m) => ({ ...m, ...(scoresById[m.job_id] || {}) }))
+            setJobs(merged)
+          }
+        } catch (err) {
+          console.warn('Recommend call failed', err)
+        }
+      }
+
+    } catch (err) {
+      console.error('Failed to fetch jobs', err)
+      setJobs([])
+    }
+  }, [searchQuery, location, salaryMin, salaryMax, type, experience, page, resultsPerPage])
+
+  useEffect(() => { fetchJobs({ query: searchQuery, page, resultsPerPage }) }, [fetchJobs, page, resultsPerPage, searchQuery])
 
   const filterJobs = useMemo(() => {
-    return jobs.filter(j => {
-      const jMin = j.salaryMin;
-      const jMax = j.salaryMax;
+    return jobs.filter((j) => {
+      const jMin = j.salaryMin || 0
+      const jMax = j.salaryMax || 0
 
-      const passType = !type || j.type === type;
-      const passSalary = jMax >= salaryMin && jMin <= salaryMax;
-      const passExp = !experience || j.experience === experience;
-      const passLoc = !location || j.location === location;
+      const jobTypeStr = String(j.type || '')
+      const passType = !type || jobTypeStr === '' || jobTypeStr.toLowerCase().includes(type.toLowerCase())
 
-      return passType && passSalary && passExp && passLoc;
-    });
-    }, [jobs, type, experience, salaryMin, salaryMax, location]);
+      const passSalary = (jMax >= salaryMin) && (jMin <= salaryMax)
+
+      const jobExp = String(j.experience || '')
+      const passExp = !experience || jobExp.toLowerCase() === experience.toLowerCase() || jobExp.toLowerCase() === 'unknown' || jobExp === ''
+
+      const passLoc = !location || (j.location || '').toLowerCase().includes(location.toLowerCase())
+
+      return passType && passSalary && passExp && passLoc
+    })
+  }, [jobs, type, experience, salaryMin, salaryMax, location])
 
   return (
     <div>
@@ -69,7 +128,8 @@ export default function MatchedAI() {
                 <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24"
                      strokeWidth="1.5" stroke="currentColor" className="nav-icon">
                   <path strokeLinecap="round" strokeLinejoin="round"
-                        d="m2.25 12 8.954-8.955c.44-.439 1.152-.439 1.591 0L21.75 12M4.5 9.75v10.125c0 .621.504 1.125 1.125 1.125H9.75v-4.875c0-.621.504-1.125 1.125-1.125h2.25c.621 0 1.125.504 1.125 1.125V21h4.125c.621 0 1.125-.504 1.125-1.125V9.75M8.25 21h8.25"/>
+                        d="m2.25 12 8.954-8.955c.44-.439 1.152-.439 1.591 0L21.75 12M4.5 9.75v10.125c0 .621.504 1.125 1.125 1.125H9.75
+v-4.875c0-.621.504-1.125 1.125-1.125h2.25c.621 0 1.125.504 1.125 1.125V21h4.125c.621 0 1.125-.504 1.125-1.125V9.75M8.25 21h8.25"/>
                 </svg>
                 Home
               </Link>
@@ -87,7 +147,7 @@ export default function MatchedAI() {
           <p className="text-muted-foreground">Jobs matched to your resume and preferences.</p>
           <p className="text-muted-foreground">Use filters to help narrow results.</p>
 
-          <form id="filtersForm" className="filters" style={{
+          <form id="filtersForm" className="filters" onSubmit={(e) => { e.preventDefault(); setPage(1); fetchJobs({ query: searchQuery, page: 1 }); }} style={{
             width: '100vw',
             maxWidth: '100%',
             margin: '18px 0',
@@ -104,6 +164,8 @@ export default function MatchedAI() {
               placeholder="Search job title, company or skill"
               className="filter-input"
               style={{ flex: 1, minWidth: '220px' }}
+              value={searchQuery}
+              onChange={(e) => setSearchQuery(e.target.value)}
             />
 
             <input
@@ -155,7 +217,7 @@ export default function MatchedAI() {
                   <span id="salaryLabel">{formatSalary(salaryMin)} - {formatSalary(salaryMax)}</span>
                 </div>
               </div>
-              
+
               <div style={{ display: 'flex', flexDirection: 'column', gap: '10px' }}>
                 <div style={{ display: 'flex', alignItems: 'center', gap: '12px' }}>
                   <label htmlFor="salaryMin" style={{ fontSize: '12px', color: 'var(--muted)', minWidth: '30px' }}>Min</label>
@@ -214,6 +276,11 @@ export default function MatchedAI() {
             }}>
               Apply Filters
             </button>
+            <select value={resultsPerPage} onChange={(e) => { const v = Number(e.target.value); setResultsPerPage(v); setPage(1); fetchJobs({ page:1, resultsPerPage: v }) }} className="filter-input" style={{ minWidth: '110px' }}>
+              <option value={10}>10 / page</option>
+              <option value={20}>20 / page</option>
+              <option value={30}>30 / page</option>
+            </select>
           </form>
 
           <section id="jobsList" className="jobs" style={{
@@ -223,11 +290,33 @@ export default function MatchedAI() {
             gap: '14px',
             marginTop: '8px'
           }}>
-          {/* Populate job cards */}
-          {filterJobs.map((job,index) => (
-          <JobCard key={index} job={job} formatSalary={formatSalary}/>
-          ))}
+            {filterJobs.map((job,index) => (
+              <JobCard key={job.job_id || index} job={job} formatSalary={formatSalary}/>
+            ))}
           </section>
+
+          {/* Pagination footer: show server total and filtered count when client-side filters are active */}
+          {(() => {
+            const filteredCount = filterJobs.length || 0
+            const clientFilterActive = Boolean(type || experience || location || salaryMin !== 30000 || salaryMax !== 200000)
+            const pagesFromServer = totalResults ? Math.max(1, Math.ceil((totalResults || 0) / resultsPerPage)) : Math.max(1, Math.ceil((jobs.length || 0) / resultsPerPage))
+            const pagesFromFiltered = Math.max(1, Math.ceil(filteredCount / resultsPerPage))
+            const totalPages = clientFilterActive ? pagesFromFiltered : pagesFromServer
+
+            const prevDisabled = page <= 1
+            const nextDisabled = clientFilterActive ? (page >= totalPages) : (totalResults ? (page * resultsPerPage) >= totalResults : ((jobs.length || 0) < resultsPerPage))
+
+            return (
+              <div style={{ display: 'flex', justifyContent: 'center', alignItems: 'center', gap: 12, marginTop: 12 }}>
+                <button onClick={() => { if (!prevDisabled) { const np = page - 1; setPage(np); fetchJobs({ page: np }); } }} disabled={prevDisabled}>Prev</button>
+                <div style={{ fontSize: 14, color: 'var(--muted)' }}>
+                  Page {page} of {totalPages}
+                  {clientFilterActive ? ` — showing ${filteredCount} result${filteredCount === 1 ? '' : 's'} (server total: ${totalResults || 0})` : (totalResults ? ` — ${totalResults} total results` : '')}
+                </div>
+                <button onClick={() => { if (!nextDisabled) { const np = page + 1; setPage(np); fetchJobs({ page: np }); } }} disabled={nextDisabled}>Next</button>
+              </div>
+            )
+          })()}
         </main>
       </div>
     </div>
@@ -236,20 +325,20 @@ export default function MatchedAI() {
 
 function JobCard({job, formatSalary}) {
   return (
-  <div className="job-card">
-    <div className="job-card-header">
-      <h2 className="job-title">{job.title}</h2>
-      <div className="company-name-and-location-and-type">{job.company} - {job.location} || {job.type}</div>
-      <div className="skills">Skills: {job.skills.join(", ")}</div>
-      <div className="salary-range">Salary: {formatSalary(job.salaryMin)} - {formatSalary(job.salaryMax)}</div>
-      <div className='job-experience'>Experience Level: {job.experience}</div>
-      <div className="job-match-score">Match Score: <strong>{job.matchScore}%</strong></div>
-      <div style={{ display:'flex', gap:10, justifyContent:'flex-end', padding:'14px 20px'}}>
-        <button style={{ padding:'4px 12px'}}>View</button>
-        <button style={{ padding:'4px 12px'}}>Save</button>
-        <button style={{ padding:'4px 12px'}}>Apply</button>
+    <div className="job-card">
+      <div className="job-card-header">
+        <h2 className="job-title">{job.title}</h2>
+        <div className="company-name-and-location-and-type">{job.company} - {job.location} {job.type ? `|| ${job.type}` : ''}</div>
+        <div className="skills">Skills: {Array.isArray(job.skills) ? job.skills.join(", ") : (job.skills || '')}</div>
+        <div className="salary-range">Salary: {formatSalary(job.salaryMin)} - {formatSalary(job.salaryMax)}</div>
+        <div className='job-experience'>Experience Level: {job.experience}</div>
+        <div className="job-match-score">Match Score: <strong>{job.score ?? job.matchScore ?? 0}%</strong></div>
+        <div style={{ display:'flex', gap:10, justifyContent:'flex-end', padding:'14px 20px'}}>
+          <a href={job.url || '#'}><button style={{ padding:'4px 12px'}}>View</button></a>
+          <button style={{ padding:'4px 12px'}}>Save</button>
+          <button style={{ padding:'4px 12px'}}>Apply</button>
+        </div>
       </div>
     </div>
-  </div>
-);
+  )
 }
