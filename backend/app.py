@@ -28,13 +28,9 @@ else:
 # CORS allowlist (env) or permissive for dev
 _allow = os.getenv("CORS_ALLOW_ORIGINS", "")
 origins = [o.strip() for o in _allow.split(",") if o.strip()]
-
-# Always give Flask-CORS a list (never None)
-if not origins:
-    origins = ["*"]  # Allow all for local dev
-
-CORS(app, origins=origins, supports_credentials=True)
-
+# If no allowlist provided, be permissive in dev by allowing all origins
+# flask_cors expects a string or list; passing None can cause errors in some versions
+CORS(app, origins=(origins if origins else "*"), supports_credentials=True)
 
 # -----------------------------
 # DB helpers (uses your global connection style, but with safe fallback)
@@ -136,6 +132,121 @@ def _make_cover_letter(candidate_name: str, job_title: str, company: str, matche
         f"and learn quickly to meet team goals.\n\n"
         f"Thank you for your time and consideration.\nSincerely,\n{who}"
     )
+
+
+# --- AI adapter helpers (pluggable) -------------------------------------
+def prepare_cover_letter_request(resume_text: str, candidate_name: str, job_title: str, company: str, matched: List[str], gaps: List[str], bullets: List[str], derived_skills: List[str]) -> Dict[str, Any]:
+    """Prepare a portable request object / prompt for an AI service.
+
+    This function formats the minimal context required by an AI model. It does NOT call any external API.
+    Replace or extend `generate_cover_letter_via_ai` to send this payload to your preferred AI provider.
+    """
+    # Truncate resume to a reasonable size to avoid very large prompts
+    resume_excerpt = (resume_text or "").strip()
+    if len(resume_excerpt) > 3000:
+        resume_excerpt = resume_excerpt[:3000] + "..."
+
+    prompt = (
+        f"You are an assistant that writes concise, professional cover letters.\n"
+        f"Write a short (2-4 paragraph) cover letter addressed to 'Hiring Manager' for the role '{job_title}' at '{company}'.\n"
+        f"Candidate name: '{candidate_name or 'Candidate'}'.\n"
+        f"Matched skills: {', '.join(matched) if matched else 'None'}.\n"
+        f"Skills to improve: {', '.join(gaps) if gaps else 'None'}.\n"
+        f"Derived skills from resume: {', '.join(derived_skills[:10]) if derived_skills else 'None'}.\n"
+        f"Suggested resume bullets: {'; '.join(bullets[:6]) if bullets else 'None'}.\n\n"
+        f"Resume excerpt (for context):\n{resume_excerpt}\n\n"
+        f"Tone: professional, confident, concise. Avoid stating you are applying via an automated tool. Close with a simple signature that includes the candidate name if provided.\n"
+    )
+
+    return {
+        "prompt": prompt,
+        "metadata": {
+            "job_title": job_title,
+            "company": company,
+            "candidate_name": candidate_name,
+            "matched_skills": matched,
+            "gaps": gaps,
+        },
+    }
+
+
+def generate_cover_letter_via_ai(request_obj: Dict[str, Any]) -> Dict[str, Any]:
+    """
+    Pluggable AI call wrapper.
+    Sends the prepared request to an AI provider and returns the cover letter and bullets.
+    """
+    # Example: check environment to select provider (not implemented here)
+    provider = os.getenv("AI_PROVIDER", "local").lower()
+
+    # Local fallback: synthesize cover from existing helper (deterministic)
+    try:
+        meta = request_obj.get("metadata", {})
+        prompt = request_obj.get("prompt", "")
+        # We still return resume_bullets if provided in metadata or request_obj
+        bullets = request_obj.get("metadata", {}).get("suggested_bullets") or request_obj.get("suggested_bullets") or []
+
+        # If bullets empty, attempt to use the prompt to reconstruct a few bullets (best-effort)
+        if not bullets and isinstance(request_obj.get("prompt"), str):
+            bullets = []
+
+        # Fallback cover letter using the small heuristic generator so behavior remains stable
+        cover = _make_cover_letter(
+            meta.get("candidate_name", ""),
+            meta.get("job_title", ""),
+            meta.get("company", ""),
+            meta.get("matched_skills", []) or [],
+            meta.get("gaps", []) or [],
+        )
+
+        return {"cover_letter": cover, "resume_bullets": bullets}
+
+    except Exception as e:
+        app.logger.exception(f"AI cover generation error: {e}")
+        # on error, return a minimal fallback
+        return {"cover_letter": "", "resume_bullets": []}
+
+
+def generate_cover_letter_for(resume_text: str, candidate_name: str, job: Dict[str, Any], user_listed_skills: List[str] | None = None) -> Dict[str, Any]:
+    """
+
+    Helper that prepares the AI request and returns the cover letter + bullets
+
+    """
+    user_listed_skills = user_listed_skills or []
+
+    job_title = job.get("title") or ""
+    job_company = job.get("company") or job.get("company", {}).get("display_name") if isinstance(job.get("company"), dict) else job.get("company") or ""
+    job_description = job.get("description") or (job.get("raw", {}).get("description") if isinstance(job.get("raw"), dict) else "")
+
+    derived = _extract_resume_skills(resume_text, user_listed_skills)
+    job_skills = job.get("skills") or []
+    if not job_skills:
+        job_skills = _extract_resume_skills(job_description)
+
+    # Basic matching heuristics (keeps behavior consistent with recommend/match)
+    score, gaps = _match_score(resume_text, job_skills)
+    matched = [s for s in job_skills if s.lower() in resume_text.lower()] or derived[:3]
+    bullets = _make_bullets(job_title, job_company, matched)
+
+    req = prepare_cover_letter_request(
+        resume_text=resume_text,
+        candidate_name=candidate_name,
+        job_title=job_title,
+        company=job_company,
+        matched=matched,
+        gaps=gaps,
+        bullets=bullets,
+        derived_skills=derived,
+    )
+    req["suggested_bullets"] = bullets
+
+    ai_resp = generate_cover_letter_via_ai(req)
+
+    cover_text = ai_resp.get("cover_letter") or ai_resp.get("coverLetter") or ""
+    resp_bullets = ai_resp.get("resume_bullets") or ai_resp.get("resumeBullets") or bullets
+
+    return {"cover_letter": cover_text, "resume_bullets": resp_bullets, "score": score, "gaps": gaps, "matched_skills": matched, "derived_resume_skills": derived[:8]}
+
 
 # -----------------------------
 # Your original routes (kept)
@@ -329,15 +440,11 @@ def _normalize_contract_type(job_raw: dict, title: str, description: str) -> str
 
     return ""
 
-# POST /api/jobs/search { "inputs": ["https://...", "data analyst chicago", ...] }
-@app.post("/api/jobs/search")
-def jobs_search():
-    data = request.get_json(force=True) or {}
-    # Read filters from frontend --> frontend sends camelCase salaryMin/salaryMax
-    query = (data.get("query") or (data.get("inputs") or [""])[0] or "").strip()
-    location = (data.get("location") or "").strip()
 
-    # pagination --> allows efficient browsing through large result sets
+# -----------------------------
+# jobs_search helper utilities
+# -----------------------------
+def _parse_pagination(data: dict) -> Tuple[int, int]:
     try:
         page = int(data.get("page", 1) or 1)
     except Exception:
@@ -346,8 +453,10 @@ def jobs_search():
         results_per_page = int(data.get("resultsPerPage", data.get("results_per_page", 10)) or 10)
     except Exception:
         results_per_page = 10
+    return page, results_per_page
 
-    # make salary filters into ints
+
+def _parse_salary_filters(data: dict) -> Tuple[int, int]:
     try:
         salary_min = int(data.get("salaryMin", 0) or 0)
     except Exception:
@@ -356,38 +465,91 @@ def jobs_search():
         salary_max = int(data.get("salaryMax", 999999) or 999999)
     except Exception:
         salary_max = 999999
+    return salary_min, salary_max
 
-    job_type = (data.get("type") or "").strip()
-    experience = (data.get("exp") or data.get("experience") or "").strip()
 
-    if not isinstance(query, str) or not query:
-        return bad("Provide 'query' as a non-empty string")
+def _to_int_or_none(v: Any) -> int | None:
+    if v is None:
+        return None
+    try:
+        return int(float(v))
+    except Exception:
+        s = re.sub(r"[^0-9.-]", "", str(v) or "")
+        try:
+            return int(float(s))
+        except Exception:
+            return None
 
-    # Read Adzuna credentials from environment 
-    app_id = os.getenv("ADZUNA_APP_ID")
-    app_key = os.getenv("ADZUNA_APP_KEY")
-    country = os.getenv("ADZUNA_COUNTRY", "us")
 
-    if not app_id or not app_key:
-        return bad("Adzuna API credentials not configured on server. Set ADZUNA_APP_ID and ADZUNA_APP_KEY.")
-
-    url = f"https://api.adzuna.com/v1/api/jobs/{country}/search/{page}"
+def _build_adzuna_params(app_id: str, app_key: str, country: str, query: str, location: str, page: int, results_per_page: int, salary_min: int, salary_max: int) -> dict:
     params = {
         "app_id": app_id,
         "app_key": app_key,
         "results_per_page": results_per_page,
         "what": query,
         "where": location,
-        "content-type": "application/json"
+        "content-type": "application/json",
     }
-
-    # Apply salary filters only when provided
     if salary_min and salary_min > 0:
         params["salary_min"] = salary_min
     if salary_max and salary_max < 999999:
         params["salary_max"] = salary_max
+    return params
 
-    # Note: Adzuna has limited direct filters for type/experience in query params; keep them for local filtering below
+
+def _normalize_adzuna_job(job: dict, jid: int) -> dict:
+    raw_desc = job.get("description", "") or ""
+    desc = re.sub(r"<[^>]+>", "", raw_desc)
+    skills = _extract_resume_skills(desc)
+    s_min = _to_int_or_none(job.get("salary_min"))
+    s_max = _to_int_or_none(job.get("salary_max"))
+    exp_level = extract_experience_level_helper(f"{job.get('title','')} {desc}")
+    external_id = job.get("id") or job.get("ad_id") or job.get("redirect_url")
+    normalized_type = _normalize_contract_type(job, job.get('title',''), desc)
+
+    return {
+        "job_id": jid,
+        "external_id": external_id,
+        "title": job.get("title"),
+        "company": job.get("company", {}).get("display_name", "Unknown"),
+        "location": job.get("location", {}).get("display_name", ""),
+        "url": job.get("redirect_url"),
+        "description": desc[:300],
+        "salary_min": s_min,
+        "salary_max": s_max,
+        "category": job.get("category", {}).get("label", ""),
+        "created": job.get("created"),
+        "skills": skills,
+        "experience_level": exp_level,
+        "type": normalized_type,
+        "raw": job,
+    }
+
+# POST /api/jobs/search { "inputs": ["https://...", "data analyst chicago", ...] }
+@app.post("/api/jobs/search")
+def jobs_search():
+    data = request.get_json(force=True) or {}
+    # Read filters from frontend (supports camelCase inputs)
+    query = (data.get("query") or (data.get("inputs") or [""])[0] or "").strip()
+    location = (data.get("location") or "").strip()
+
+    page, results_per_page = _parse_pagination(data)
+    salary_min, salary_max = _parse_salary_filters(data)
+
+    job_type = (data.get("type") or "").strip()
+
+    if not isinstance(query, str) or not query:
+        return bad("Provide 'query' as a non-empty string")
+
+    app_id = os.getenv("ADZUNA_APP_ID")
+    app_key = os.getenv("ADZUNA_APP_KEY")
+    country = os.getenv("ADZUNA_COUNTRY", "us")
+    if not app_id or not app_key:
+        return bad("Adzuna API credentials not configured on server. Set ADZUNA_APP_ID and ADZUNA_APP_KEY.")
+
+    url = f"https://api.adzuna.com/v1/api/jobs/{country}/search/{page}"
+    params = _build_adzuna_params(app_id, app_key, country, query, location, page, results_per_page, salary_min, salary_max)
+
     try:
         res = requests.get(url, params=params, timeout=8)
         res.raise_for_status()
@@ -396,80 +558,27 @@ def jobs_search():
         app.logger.exception(f"Adzuna API error: {e}")
         return bad("Failed to fetch jobs from Adzuna API")
 
-    # Convert Adzuna data into your frontend format and extract skills for later recommend()
     results = []
-    # Ensure total is an integer (0 when missing) so frontend math is reliable
     try:
         total = int(adzuna_data.get("count") or 0)
     except Exception:
         total = 0
-    for job in adzuna_data.get("results", []):
+
+    for ad_job in adzuna_data.get("results", []):
         jid = MEM["next_job_id"]
         MEM["next_job_id"] += 1
 
-        # Adzuna does not have specific experience level field; infer experience from title/description
-        raw_desc = job.get("description", "") or ""
-        # strip basic HTML tags from description
-        desc = re.sub(r"<[^>]+>", "", raw_desc)
+        job_data = _normalize_adzuna_job(ad_job, jid)
 
-        # extract a simple list of skills from the job description using the helper function
-        skills = _extract_resume_skills(desc)
-
-        # normalize salary fields to ints or None
-        def _to_int_or_none(v):
-            if v is None:
-                return None
-            try:
-                return int(float(v))
-            except Exception:
-                # try to strip non-digits
-                s = re.sub(r"[^0-9.-]", "", str(v) or "")
-                try:
-                    return int(float(s))
-                except Exception:
-                    return None
-
-        s_min = _to_int_or_none(job.get("salary_min"))
-        s_max = _to_int_or_none(job.get("salary_max"))
-
-        # infer experience level from title+description
-        exp_level = extract_experience_level_helper(f"{job.get('title','')} {desc}")
-
-        external_id = job.get("id") or job.get("ad_id") or job.get("redirect_url")
-
-        normalized_type = _normalize_contract_type(job, job.get('title',''), desc)
-
-        job_data = {
-            "job_id": jid,
-            "external_id": external_id,
-            "title": job.get("title"),
-            "company": job.get("company", {}).get("display_name", "Unknown"),
-            "location": job.get("location", {}).get("display_name", ""),
-            "url": job.get("redirect_url"),
-            "description": desc[:300],
-            "salary_min": s_min,
-            "salary_max": s_max,
-            "category": job.get("category", {}).get("label", ""),
-            "created": job.get("created"),
-            "skills": skills,
-            "experience_level": exp_level,
-            "type": normalized_type,
-            # preserve raw metadata that may help local filtering
-            "raw": job,
-        }
-
-        # Local filtering: if frontend asked for a job type or experience, try to filter heuristically
+        # Apply the same local job_type heuristic filtering as before
         if job_type:
-            # common Adzuna field names for contract type vary; check raw data for matches
-            raw_type = (job.get("contract_time") or job.get("contract_type") or "")
+            raw_type = (ad_job.get("contract_time") or ad_job.get("contract_type") or "")
             if raw_type and job_type.lower() not in raw_type.lower():
-                # skip this job if it doesn't match requested type
                 continue
 
         MEM["jobs"][jid] = job_data
         results.append(job_data)
 
-    # Pagination, limit results to requested page size
     resp = {
         "results": results,
         "total_results": total,
@@ -478,7 +587,7 @@ def jobs_search():
         "results_per_page": results_per_page,
         "resultsPerPage": results_per_page,
     }
-    
+
     return ok(resp)
 
 # POST /api/recommend { "resume_id": int, "job_ids": [int] }
@@ -542,35 +651,121 @@ def recommend():
 
     return ok({"results": results})
 
-## POST /api/jobs/recommend { "job_title": "...", "skills": [...], "location": "..." }
-@app.post("/api/jobs/recommend")
-def job_recommend_mock():
+
+@app.post("/api/match")
+def match():
+    """Compare a single resume with a single job and return only a numeric match score.
+
+    Accepts either a resume_id (will look up stored resume) or resume_text directly.
+    Accepts either a job_id (must exist in MEM jobs) or a full job object under `job`.
+    """
     data = request.get_json(force=True) or {}
-    job_title = data.get("job_title")
-    skills = data.get("skills", [])
-    location = data.get("location")
+    resume_id = data.get("resume_id")
+    resume_text = data.get("resume_text") or ""
+    candidate_name = data.get("name") or ""
+    job_id = data.get("job_id")
+    job_payload = data.get("job")
 
-    # Validate required fields
-    if not job_title or not skills or not location:
-        return bad("Missing required field(s): job_title, skills, and location are required")
+    # resolve resume text
+    db, cursor = get_db()
+    user_listed_skills: List[str] = []
+    if not resume_text and resume_id:
+        if db:
+            try:
+                cursor.execute("SELECT resume_text FROM resumes WHERE id=%s", (resume_id,))
+                row = cursor.fetchone()
+                if row:
+                    resume_text = row.get("resume_text") or ""
+            except Exception as e:
+                app.logger.exception(e)
 
-    # Mock response
-    mock_score = 85 if "data analysis" in [s.lower() for s in skills] else 70
-    return ok({
-        "message": "Job recommendation generated successfully",
-        "input": data,
-        "mock_score": mock_score
-    })
+        if not resume_text:
+            r = MEM["resumes"].get(resume_id, {})
+            resume_text = r.get("text", "")
+            candidate_name = candidate_name or r.get("name", "")
+            user_listed_skills = r.get("skills", []) or []
 
+    if not resume_text:
+        return bad("Provide 'resume_id' or 'resume_text'")
+
+    # resolve job
+    job = None
+    if job_payload and isinstance(job_payload, dict):
+        job = job_payload
+    elif job_id:
+        job = MEM["jobs"].get(job_id)
+
+    if not job:
+        return bad("Provide 'job_id' (existing) or 'job' object in the request")
+
+    # determine job description (used only if skills are not present on the job)
+    job_description = job.get("description") or (job.get("raw", {}).get("description") if isinstance(job.get("raw"), dict) else "")
+
+    # determine job skills (used to compute the match score)
+    job_skills = job.get("skills") or []
+    if not job_skills:
+        job_skills = _extract_resume_skills(job_description)
+
+    # scoring
+    score, _ = _match_score(resume_text, job_skills)
+
+    return ok({"score": score})
+
+
+# POST /api/generate-cover-letter { same payload as /api/match }
+@app.post("/api/generate-cover-letter")
+def generate_cover_letter():
+    """
+    Generate a cover letter for a single resume/job pair.
+    """
+    data = request.get_json(force=True) or {}
+
+    # resolve resume text (allow resume_id or inline resume_text)
+    resume_id = data.get("resume_id")
+    resume_text = data.get("resume_text") or ""
+    candidate_name = data.get("name") or ""
+
+    db, cursor = get_db()
+    user_listed_skills: List[str] = []
+    if not resume_text and resume_id:
+        if db:
+            try:
+                cursor.execute("SELECT resume_text, name, skills FROM resumes WHERE id=%s", (resume_id,))
+                row = cursor.fetchone()
+                if row:
+                    resume_text = row.get("resume_text") or resume_text
+                    candidate_name = candidate_name or row.get("name")
+            except Exception:
+                app.logger.debug("DB resume lookup failed, falling back to memory store")
+
+        if not resume_text:
+            r = MEM["resumes"].get(resume_id, {})
+            resume_text = resume_text or r.get("text", "")
+            candidate_name = candidate_name or r.get("name", "")
+            user_listed_skills = r.get("skills", []) or []
+
+    if not resume_text:
+        return bad("Provide 'resume_id' or 'resume_text'")
+
+    # resolve job (allow job object or job_id)
+    job_payload = data.get("job")
+    job_id = data.get("job_id")
+    job = job_payload if (job_payload and isinstance(job_payload, dict)) else MEM["jobs"].get(job_id)
+    if not job:
+        return bad("Provide 'job_id' (existing) or 'job' object in the request")
+
+    # Delegate to helper that builds the request and calls the AI adapter
+    resp = generate_cover_letter_for(resume_text=resume_text, candidate_name=candidate_name, job=job, user_listed_skills=user_listed_skills)
+    return ok(resp)
 
 # -----------------------------
 # Chatbot blueprint (Gemini) — optional
 # -----------------------------
-#try:
-    #from chat_api import chat_bp    # backend/chat_api.py
-    #app.register_blueprint(chat_bp)
-#except Exception as e:
-    #app.logger.warning(f"Chat blueprint not loaded: {e}")
+try:
+    from chat_api import chat_bp    # backend/chat_api.py
+    app.register_blueprint(chat_bp)
+except Exception as e:
+    app.logger.warning(f"Chat blueprint not loaded: {e}")
 
 # -----------------------------
 # Main
