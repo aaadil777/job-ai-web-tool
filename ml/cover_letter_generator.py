@@ -74,7 +74,6 @@ class CoverLetterGenerator:
         tone: str = "professional",
         job_title: str | None = None,
         company: str | None = None,
-        extras: str | None = None,
         job_description: str | None = None,
         job_board: str | None = None,
     ):
@@ -84,7 +83,6 @@ class CoverLetterGenerator:
             tone = tone,
             job_title = job_title,
             company = company,
-            extras = extras,
             job_description = job_description,
             job_board = job_board,
         )

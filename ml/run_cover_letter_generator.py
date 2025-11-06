@@ -34,7 +34,6 @@ Benefits: Competitive salary, health insurance, 401(k) matching, paid time off
 company = "Wallbanger Academy"
 job_title = "Software Engineer"
 tone = "friendly but professional"
-extras = None
 
 if __name__ == "__main__":
     parser = ParsingFunctionsPreLLM(r"ml\mock_resumes\Computer Science CAREER sample_1.pdf")
@@ -50,7 +49,6 @@ if __name__ == "__main__":
         job_description = job_discription,
         company = company,
         job_title = job_title,
-        tone = tone,
-        extras = extras
+        tone = tone
     )
     print(letter)
