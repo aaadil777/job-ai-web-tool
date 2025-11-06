@@ -1,0 +1,18 @@
+### Test 1: Valid POST Request
+POST http://127.0.0.1:5000/api/jobs/recommend
+Content-Type: application/json
+
+{
+  "job_title": "Operations Manager",
+  "skills": ["leadership", "data analysis", "supply chain"],
+  "location": "Tulsa, OK"
+}
+
+### Test 2: Missing Field
+POST http://127.0.0.1:5000/api/jobs/recommend
+Content-Type: application/json
+
+{
+  "job_title": "Operations Manager",
+  "skills": ["leadership", "data analysis"]
+}
