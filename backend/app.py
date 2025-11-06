@@ -1,6 +1,7 @@
 # backend/app.py
 from __future__ import annotations
 import os, re, json, random, string
+import requests
 from datetime import datetime
 from typing import Any, Dict, List, Tuple
 
@@ -17,6 +18,12 @@ from werkzeug.utils import secure_filename
 # -----------------------------
 load_dotenv()
 app = Flask(__name__)
+
+# Log whether Adzuna creds are available (don't print the secrets themselves)
+if os.getenv("ADZUNA_APP_ID") and os.getenv("ADZUNA_APP_KEY"):
+    app.logger.info("Adzuna credentials found in environment")
+else:
+    app.logger.warning("Adzuna credentials not found in environment; set ADZUNA_APP_ID and ADZUNA_APP_KEY in .env or env")
 
 # CORS allowlist (env) or permissive for dev
 _allow = os.getenv("CORS_ALLOW_ORIGINS", "")
@@ -245,35 +252,234 @@ def upload_resume():
     MEM["resumes"][rid] = {"user_id": None, "text": text, "file_name": fname, "name": "", "skills": [], "experience": ""}
     return ok({"resume_id": rid})
 
+def extract_experience_level_helper(text: str) -> str:
+    """Heuristic to infer experience level from free text.
+
+    Returns one of: 'entry', 'mid', 'senior', or 'unknown'.
+
+    Heuristics (in order):
+    - explicit keywords for entry (intern, junior, entry-level, graduate) => 'entry'
+    - explicit keywords for senior (senior, sr, lead, principal, director, vp, manager) => 'senior'
+    - numeric years of experience (e.g. "3 years") => mapped to thresholds:
+        0-1 => entry, 2-4 => mid, 5+ => senior
+    - otherwise 'unknown'
+    """
+    if not text:
+        return 'unknown'
+
+    s = text.lower()
+
+    # entry keywords
+    if re.search(r"\b(intern(ship)?|intern|fresher|new\s+grad|graduate|entry[- ]?level|junior)\b", s):
+        return 'entry'
+
+    # senior keywords (include common abbreviations)
+    if re.search(r"\b(senior|sr\.?|lead|principal|director|vp\b|vice\s+president|manager)\b", s):
+        return 'senior'
+
+    # numeric years: map to categories
+    m = re.search(r"(\d+)\s*(\+|plus)?\s*(years|yrs|y)\b", s)
+    if m:
+        try:
+            years = int(m.group(1))
+        except Exception:
+            years = 0
+        if years <= 1:
+            return 'entry'
+        if 2 <= years <= 4:
+            return 'mid'
+        if years >= 5:
+            return 'senior'
+
+    return 'unknown'
+
+
+def _normalize_contract_type(job_raw: dict, title: str, description: str) -> str:
+    """Normalize job type into friendly labels.
+
+    Returns one of: 'Full-time', 'Part-time', 'Contract', 'Internship', 'Remote', ''
+    """
+    if not isinstance(job_raw, dict):
+        job_raw = {}
+    ct = (job_raw.get("contract_time") or job_raw.get("contract_type") or "").strip().lower()
+    if ct:
+        if "full" in ct or "permanent" in ct:
+            return "Full-time"
+        if "part" in ct:
+            return "Part-time"
+        if "contract" in ct or "temporary" in ct:
+            return "Contract"
+        if "intern" in ct:
+            return "Internship"
+        if "remote" in ct:
+            return "Remote"
+        if "hybrid" in ct:
+            return "Hybrid"
+
+    # fallback: look into title/description heuristics
+    txt = f"{title or ''} {description or ''}".lower()
+    if "remote" in txt:
+        return "Remote"
+    if "part-time" in txt or "part time" in txt:
+        return "Part-time"
+    if "contract" in txt or "temporary" in txt:
+        return "Contract"
+    if "intern" in txt or "internship" in txt:
+        return "Internship"
+
+    return ""
+
 # POST /api/jobs/search { "inputs": ["https://...", "data analyst chicago", ...] }
 @app.post("/api/jobs/search")
 def jobs_search():
     data = request.get_json(force=True) or {}
-    inputs = data.get("inputs", [])
-    if not isinstance(inputs, list) or not inputs:
-        return bad("Provide 'inputs' as a non-empty list of links or queries")
+    # Read filters from frontend --> frontend sends camelCase salaryMin/salaryMax
+    query = (data.get("query") or (data.get("inputs") or [""])[0] or "").strip()
+    location = (data.get("location") or "").strip()
 
+    # pagination --> allows efficient browsing through large result sets
+    try:
+        page = int(data.get("page", 1) or 1)
+    except Exception:
+        page = 1
+    try:
+        results_per_page = int(data.get("resultsPerPage", data.get("results_per_page", 10)) or 10)
+    except Exception:
+        results_per_page = 10
+
+    # make salary filters into ints
+    try:
+        salary_min = int(data.get("salaryMin", 0) or 0)
+    except Exception:
+        salary_min = 0
+    try:
+        salary_max = int(data.get("salaryMax", 999999) or 999999)
+    except Exception:
+        salary_max = 999999
+
+    job_type = (data.get("type") or "").strip()
+    experience = (data.get("exp") or data.get("experience") or "").strip()
+
+    if not isinstance(query, str) or not query:
+        return bad("Provide 'query' as a non-empty string")
+
+    # Read Adzuna credentials from environment 
+    app_id = os.getenv("ADZUNA_APP_ID")
+    app_key = os.getenv("ADZUNA_APP_KEY")
+    country = os.getenv("ADZUNA_COUNTRY", "us")
+
+    if not app_id or not app_key:
+        return bad("Adzuna API credentials not configured on server. Set ADZUNA_APP_ID and ADZUNA_APP_KEY.")
+
+    url = f"https://api.adzuna.com/v1/api/jobs/{country}/search/{page}"
+    params = {
+        "app_id": app_id,
+        "app_key": app_key,
+        "results_per_page": results_per_page,
+        "what": query,
+        "where": location,
+        "content-type": "application/json"
+    }
+
+    # Apply salary filters only when provided
+    if salary_min and salary_min > 0:
+        params["salary_min"] = salary_min
+    if salary_max and salary_max < 999999:
+        params["salary_max"] = salary_max
+
+    # Note: Adzuna has limited direct filters for type/experience in query params; keep them for local filtering below
+    try:
+        res = requests.get(url, params=params, timeout=8)
+        res.raise_for_status()
+        adzuna_data = res.json()
+    except Exception as e:
+        app.logger.exception(f"Adzuna API error: {e}")
+        return bad("Failed to fetch jobs from Adzuna API")
+
+    # Convert Adzuna data into your frontend format and extract skills for later recommend()
     results = []
-    for s in inputs:
-        jid = MEM["next_job_id"]; MEM["next_job_id"] += 1
-        s_low = s.lower()
-        is_da = any(k in s_low for k in ["analyst", "analytics", "data"])
-        title = "Data Analyst" if is_da else ("Associate Product Manager" if "product" in s_low else "Operations Analyst")
-        company = "Northstar Logistics" if "logistic" in s_low else ("Acme Robotics" if "robot" in s_low else "BluePeak")
-        skills = ["SQL", "Python", "Power BI", "APIs", "Experimentation"] if is_da else ["Roadmaps", "Jira", "Stakeholder mgmt", "KPIs"]
-        fake = {
-            "job_id": jid,
-            "title": title,
-            "company": company,
-            "location": "Remote - US",
-            "url": s if s.startswith("http") else f"https://jobs.example.com/{_gen_id()}",
-            "skills": skills,
-            "description": f"Auto-generated placeholder for input: {s[:160]}",
-        }
-        MEM["jobs"][jid] = fake
-        results.append(fake)
+    # Ensure total is an integer (0 when missing) so frontend math is reliable
+    try:
+        total = int(adzuna_data.get("count") or 0)
+    except Exception:
+        total = 0
+    for job in adzuna_data.get("results", []):
+        jid = MEM["next_job_id"]
+        MEM["next_job_id"] += 1
 
-    return ok({"results": results})
+        # Adzuna does not have specific experience level field; infer experience from title/description
+        raw_desc = job.get("description", "") or ""
+        # strip basic HTML tags from description
+        desc = re.sub(r"<[^>]+>", "", raw_desc)
+
+        # extract a simple list of skills from the job description using the helper function
+        skills = _extract_resume_skills(desc)
+
+        # normalize salary fields to ints or None
+        def _to_int_or_none(v):
+            if v is None:
+                return None
+            try:
+                return int(float(v))
+            except Exception:
+                # try to strip non-digits
+                s = re.sub(r"[^0-9.-]", "", str(v) or "")
+                try:
+                    return int(float(s))
+                except Exception:
+                    return None
+
+        s_min = _to_int_or_none(job.get("salary_min"))
+        s_max = _to_int_or_none(job.get("salary_max"))
+
+        # infer experience level from title+description
+        exp_level = extract_experience_level_helper(f"{job.get('title','')} {desc}")
+
+        external_id = job.get("id") or job.get("ad_id") or job.get("redirect_url")
+
+        normalized_type = _normalize_contract_type(job, job.get('title',''), desc)
+
+        job_data = {
+            "job_id": jid,
+            "external_id": external_id,
+            "title": job.get("title"),
+            "company": job.get("company", {}).get("display_name", "Unknown"),
+            "location": job.get("location", {}).get("display_name", ""),
+            "url": job.get("redirect_url"),
+            "description": desc[:300],
+            "salary_min": s_min,
+            "salary_max": s_max,
+            "category": job.get("category", {}).get("label", ""),
+            "created": job.get("created"),
+            "skills": skills,
+            "experience_level": exp_level,
+            "type": normalized_type,
+            # preserve raw metadata that may help local filtering
+            "raw": job,
+        }
+
+        # Local filtering: if frontend asked for a job type or experience, try to filter heuristically
+        if job_type:
+            # common Adzuna field names for contract type vary; check raw data for matches
+            raw_type = (job.get("contract_time") or job.get("contract_type") or "")
+            if raw_type and job_type.lower() not in raw_type.lower():
+                # skip this job if it doesn't match requested type
+                continue
+
+        MEM["jobs"][jid] = job_data
+        results.append(job_data)
+
+    # Pagination, limit results to requested page size
+    resp = {
+        "results": results,
+        "total_results": total,
+        "totalResults": total,
+        "page": page,
+        "results_per_page": results_per_page,
+        "resultsPerPage": results_per_page,
+    }
+    
+    return ok(resp)
 
 # POST /api/recommend { "resume_id": int, "job_ids": [int] }
 @app.post("/api/recommend")
@@ -360,15 +566,15 @@ def job_recommend_mock():
 # -----------------------------
 # Chatbot blueprint (Gemini) — optional
 # -----------------------------
-try:
-    from chat_api import chat_bp    # backend/chat_api.py
-    app.register_blueprint(chat_bp)
-except Exception as e:
-    app.logger.warning(f"Chat blueprint not loaded: {e}")
+#try:
+    #from chat_api import chat_bp    # backend/chat_api.py
+    #app.register_blueprint(chat_bp)
+#except Exception as e:
+    #app.logger.warning(f"Chat blueprint not loaded: {e}")
 
 # -----------------------------
 # Main
 # -----------------------------
 if __name__ == "__main__":
-    port = int(os.getenv("PORT", "5000"))
+    port = int(os.getenv("PORT", "5001"))
     app.run(host="0.0.0.0", port=port, debug=True)
