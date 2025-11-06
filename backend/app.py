@@ -28,9 +28,13 @@ else:
 # CORS allowlist (env) or permissive for dev
 _allow = os.getenv("CORS_ALLOW_ORIGINS", "")
 origins = [o.strip() for o in _allow.split(",") if o.strip()]
-# If no allowlist provided, be permissive in dev by allowing all origins
-# flask_cors expects a string or list; passing None can cause errors in some versions
-CORS(app, origins=(origins if origins else "*"), supports_credentials=True)
+
+# Always give Flask-CORS a list (never None)
+if not origins:
+    origins = ["*"]  # Allow all for local dev
+
+CORS(app, origins=origins, supports_credentials=True)
+
 
 # -----------------------------
 # DB helpers (uses your global connection style, but with safe fallback)
@@ -537,6 +541,27 @@ def recommend():
         })
 
     return ok({"results": results})
+
+## POST /api/jobs/recommend { "job_title": "...", "skills": [...], "location": "..." }
+@app.post("/api/jobs/recommend")
+def job_recommend_mock():
+    data = request.get_json(force=True) or {}
+    job_title = data.get("job_title")
+    skills = data.get("skills", [])
+    location = data.get("location")
+
+    # Validate required fields
+    if not job_title or not skills or not location:
+        return bad("Missing required field(s): job_title, skills, and location are required")
+
+    # Mock response
+    mock_score = 85 if "data analysis" in [s.lower() for s in skills] else 70
+    return ok({
+        "message": "Job recommendation generated successfully",
+        "input": data,
+        "mock_score": mock_score
+    })
+
 
 # -----------------------------
 # Chatbot blueprint (Gemini) — optional
