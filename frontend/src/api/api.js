@@ -41,7 +41,7 @@ async function handleResponse(res) {
 // Check backend health
 export async function getHealth() {
   const res = await fetch(`${API_BASE}/health`); // ex: http://localhost:5000/api/health
-  return handleResponse(res);
+  return await handleResponse(res);
 }
 
 // Upload resume (JSON)
@@ -173,4 +173,41 @@ export async function getRecommendations(resumeId, jobIds) {
   }
 
   return data;
+}
+
+// Match a single resume with a single job and return match metadata + generated cover letter
+// payload: { resume_id?, resume_text?, name?, job_id?, job? }
+export async function matchResumeToJob(payload = {}) {
+  const res = await fetch(`${API_BASE}/match`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(payload),
+  });
+  const data = await handleResponse(res);
+  // The backend `match` endpoint now returns only a numeric score. Normalize to { score } when present.
+  if (data && typeof data.score !== 'undefined') {
+    return { score: Number(data.score) };
+  }
+  return data;
+}
+
+// Generate a cover letter for a resume/job pair. Returns { cover_letter, resume_bullets }
+// payload: same shape as matchResumeToJob
+export async function generateCoverLetter(payload = {}) {
+  const res = await fetch(`${API_BASE}/generate-cover-letter`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(payload),
+  });
+
+  // Normalize AI response so callers always get { cover_letter, resume_bullets }
+  const data = await handleResponse(res);
+  if (!data || typeof data !== 'object') return { cover_letter: '', resume_bullets: [] };
+
+  return {
+    cover_letter: data.cover_letter || data.coverLetter || data.cover || '',
+    resume_bullets: Array.isArray(data.resume_bullets) ? data.resume_bullets : (Array.isArray(data.resumeBullets) ? data.resumeBullets : (Array.isArray(data.resumeBullets) ? data.resumeBullets : [])),
+    // include raw data for debugging if callers need it
+    _raw: data,
+  };
 }
