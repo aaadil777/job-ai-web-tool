@@ -2,6 +2,7 @@ from pre_llm_filter_functions import ParsingFunctionsPreLLM
 from cover_letter_generator import CoverLetterGenerator
 from pprint import pprint
 
+# MOCK DATA (FOR TESTING PURPOSES)
 job_discription = """
 Job Responsibilities:
 Design, develop, and maintain software applications
