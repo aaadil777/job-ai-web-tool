@@ -1,7 +1,7 @@
 import { useState, useEffect, useMemo, useCallback } from 'react'
 import { Link } from 'react-router-dom'
 import './jobAI.css'
-import { searchJobs, getRecommendations } from '../api/api'
+import { searchJobs, getRecommendations, generateCoverLetter } from '../api/api'
 
 export default function MatchedAI() {
   useEffect(() => { document.title = 'AI Matched Jobs – jobhunter.ai' }, [])
@@ -17,6 +17,12 @@ export default function MatchedAI() {
   const [page, setPage] = useState(1)
   const [resultsPerPage, setResultsPerPage] = useState(10)
   const [totalResults, setTotalResults] = useState(0)
+  const [coverModalOpen, setCoverModalOpen] = useState(false)
+  const [coverModalLoading, setCoverModalLoading] = useState(false)
+  const [coverModalError, setCoverModalError] = useState('')
+  const [coverModalContent, setCoverModalContent] = useState('')
+  const [coverModalBullets, setCoverModalBullets] = useState([])
+  const [selectedJob, setSelectedJob] = useState(null)
 
   const formatSalary = (val) => `$${Math.round((val || 0) / 1000)}k`
 
@@ -91,6 +97,29 @@ export default function MatchedAI() {
   }, [searchQuery, location, salaryMin, salaryMax, type, experience, page, resultsPerPage])
 
   useEffect(() => { fetchJobs({ query: searchQuery, page, resultsPerPage }) }, [fetchJobs, page, resultsPerPage, searchQuery])
+
+  // Generate cover letter for a selected job and show modal
+  const handleGenerateCoverLetter = async (job) => {
+    setSelectedJob(job)
+    setCoverModalError('')
+    setCoverModalContent('')
+    setCoverModalBullets([])
+    setCoverModalOpen(true)
+    setCoverModalLoading(true)
+
+    try {
+      const resumeId = Number(localStorage.getItem('resume_id') || 0) || undefined
+      const payload = { resume_id: resumeId, job_id: job.job_id, job }
+      const data = await generateCoverLetter(payload)
+      setCoverModalContent(data.cover_letter || data.coverLetter || '')
+      setCoverModalBullets(Array.isArray(data.resume_bullets) ? data.resume_bullets : (data.resumeBullets || []))
+    } catch (err) {
+      console.error('generateCoverLetter failed', err)
+      setCoverModalError(String(err?.message || err || 'Failed to generate cover letter'))
+    } finally {
+      setCoverModalLoading(false)
+    }
+  }
 
   const filterJobs = useMemo(() => {
     return jobs.filter((j) => {
@@ -291,7 +320,7 @@ v-4.875c0-.621.504-1.125 1.125-1.125h2.25c.621 0 1.125.504 1.125 1.125V21h4.125c
             marginTop: '8px'
           }}>
             {filterJobs.map((job,index) => (
-              <JobCard key={job.job_id || index} job={job} formatSalary={formatSalary}/>
+              <JobCard key={job.job_id || index} job={job} formatSalary={formatSalary} onGenerateCover={() => handleGenerateCoverLetter(job)} />
             ))}
           </section>
 
@@ -317,13 +346,53 @@ v-4.875c0-.621.504-1.125 1.125-1.125h2.25c.621 0 1.125.504 1.125 1.125V21h4.125c
               </div>
             )
           })()}
-        </main>
+    {/* Cover letter modal */}
+            {coverModalOpen ? (
+              <div role="dialog" aria-modal="true" className="cover-modal-overlay" style={{
+                position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.5)', display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 9999
+              }} onClick={() => { if (!coverModalLoading) setCoverModalOpen(false) }}>
+                <div className="cover-modal" style={{ background: '#fff', color: '#0b0b0b', maxWidth: 800, width: '95%', maxHeight: '90vh', overflow: 'auto', borderRadius: 8, padding: 18 }} onClick={(e) => e.stopPropagation()}>
+                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 12 }}>
+                    <h3 style={{ margin: 0 }}>Cover Letter Preview</h3>
+                    <div style={{ display: 'flex', gap: 8 }}>
+                      <button onClick={() => { navigator.clipboard?.writeText(coverModalContent || '') }} disabled={!coverModalContent}>Copy</button>
+                      <button onClick={() => { if (!coverModalLoading) setCoverModalOpen(false) }}>Close</button>
+                    </div>
+                  </div>
+
+                  <div style={{ marginTop: 12 }}>
+                    {coverModalLoading ? (
+                      <div style={{ padding: 24 }}>Generating cover letter…</div>
+                    ) : coverModalError ? (
+                      <div style={{ color: 'crimson' }}>Error: {coverModalError}</div>
+                    ) : (
+                      <>
+                        {coverModalContent ? (
+                          <div style={{ whiteSpace: 'pre-wrap', lineHeight: 1.5 }}>{coverModalContent}</div>
+                        ) : null}
+
+                        {coverModalBullets && coverModalBullets.length ? (
+                          <div style={{ marginTop: 16 }}>
+                            <h4>Suggested resume bullets</h4>
+                            <ul>
+                              {coverModalBullets.map((b, i) => <li key={i}>{b}</li>)}
+                            </ul>
+                          </div>
+                        ) : null}
+                      </>
+                    )}
+                  </div>
+                </div>
+              </div>
+            ) : null}
+
+          </main>
+        </div>
       </div>
-    </div>
   )
 }
 
-function JobCard({job, formatSalary}) {
+function JobCard({job, formatSalary, onGenerateCover}) {
   return (
     <div className="job-card">
       <div className="job-card-header">
@@ -337,6 +406,7 @@ function JobCard({job, formatSalary}) {
           <a href={job.url || '#'}><button style={{ padding:'4px 12px'}}>View</button></a>
           <button style={{ padding:'4px 12px'}}>Save</button>
           <button style={{ padding:'4px 12px'}}>Apply</button>
+          <button style={{ padding:'4px 12px' }} onClick={() => onGenerateCover && onGenerateCover()}>Generate Cover Letter</button>
         </div>
       </div>
     </div>
