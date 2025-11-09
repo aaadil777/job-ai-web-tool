@@ -1,4 +1,4 @@
--- Table: SavedJobs
+-- Table: saved_jobs
 
 CREATE TABLE IF NOT EXISTS saved_jobs (
     saved_job_id INT AUTO_INCREMENT PRIMARY KEY,
