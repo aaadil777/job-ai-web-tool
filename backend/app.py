@@ -449,6 +449,11 @@ def jobs_search():
             "description": desc[:300],
             "salary_min": s_min,
             "salary_max": s_max,
+            # convenience camelCase aliases for some frontends that expect them
+            "salaryMin": s_min,
+            "salaryMax": s_max,
+            # provide a default matchScore so the UI has a consistent field to show
+            "matchScore": 0,
             "category": job.get("category", {}).get("label", ""),
             "created": job.get("created"),
             "skills": skills,
@@ -566,11 +571,11 @@ def job_recommend_mock():
 # -----------------------------
 # Chatbot blueprint (Gemini) — optional
 # -----------------------------
-#try:
-    #from chat_api import chat_bp    # backend/chat_api.py
-    #app.register_blueprint(chat_bp)
-#except Exception as e:
-    #app.logger.warning(f"Chat blueprint not loaded: {e}")
+try:
+    from chat_api import chat_bp    # backend/chat_api.py
+    app.register_blueprint(chat_bp)
+except Exception as e:
+    app.logger.warning(f"Chat blueprint not loaded: {e}")
 
 # -----------------------------
 # Main
