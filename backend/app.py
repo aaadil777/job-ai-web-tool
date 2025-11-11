@@ -332,154 +332,100 @@ def _normalize_contract_type(job_raw: dict, title: str, description: str) -> str
 # POST /api/jobs/search { "inputs": ["https://...", "data analyst chicago", ...] }
 @app.post("/api/jobs/search")
 def jobs_search():
+    ## Read search inputs
     data = request.get_json(force=True) or {}
-    # Read filters from frontend --> frontend sends camelCase salaryMin/salaryMax
-    query = (data.get("query") or (data.get("inputs") or [""])[0] or "").strip()
+    query = (data.get("query") or "").strip()
     location = (data.get("location") or "").strip()
+    page = int(data.get("page", 1))
+    results_per_page = int(data.get("resultsPerPage", 10))
 
-    # pagination --> allows efficient browsing through large result sets
-    try:
-        page = int(data.get("page", 1) or 1)
-    except Exception:
-        page = 1
-    try:
-        results_per_page = int(data.get("resultsPerPage", data.get("results_per_page", 10)) or 10)
-    except Exception:
-        results_per_page = 10
-
-    # make salary filters into ints
-    try:
-        salary_min = int(data.get("salaryMin", 0) or 0)
-    except Exception:
-        salary_min = 0
-    try:
-        salary_max = int(data.get("salaryMax", 999999) or 999999)
-    except Exception:
-        salary_max = 999999
-
-    job_type = (data.get("type") or "").strip()
-    experience = (data.get("exp") or data.get("experience") or "").strip()
-
-    if not isinstance(query, str) or not query:
+    if not query:
         return bad("Provide 'query' as a non-empty string")
 
-    # Read Adzuna credentials from environment 
+    ## Load Adzuna credentials
     app_id = os.getenv("ADZUNA_APP_ID")
     app_key = os.getenv("ADZUNA_APP_KEY")
     country = os.getenv("ADZUNA_COUNTRY", "us")
 
     if not app_id or not app_key:
-        return bad("Adzuna API credentials not configured on server. Set ADZUNA_APP_ID and ADZUNA_APP_KEY.")
+        return bad("Missing Adzuna credentials")
 
+    ## Build Adzuna request
     url = f"https://api.adzuna.com/v1/api/jobs/{country}/search/{page}"
     params = {
         "app_id": app_id,
         "app_key": app_key,
         "results_per_page": results_per_page,
         "what": query,
-        "where": location,
-        "content-type": "application/json"
+        "where": location
     }
 
-    # Apply salary filters only when provided
-    if salary_min and salary_min > 0:
-        params["salary_min"] = salary_min
-    if salary_max and salary_max < 999999:
-        params["salary_max"] = salary_max
-
-    # Note: Adzuna has limited direct filters for type/experience in query params; keep them for local filtering below
     try:
-        res = requests.get(url, params=params, timeout=8)
+        res = requests.get(url, params=params, timeout=10)
         res.raise_for_status()
-        adzuna_data = res.json()
+        data = res.json()
     except Exception as e:
         app.logger.exception(f"Adzuna API error: {e}")
-        return bad("Failed to fetch jobs from Adzuna API")
+        return bad("Failed to fetch jobs from Adzuna")
 
-    # Convert Adzuna data into your frontend format and extract skills for later recommend()
-    results = []
-    # Ensure total is an integer (0 when missing) so frontend math is reliable
-    try:
-        total = int(adzuna_data.get("count") or 0)
-    except Exception:
-        total = 0
-    for job in adzuna_data.get("results", []):
-        jid = MEM["next_job_id"]
-        MEM["next_job_id"] += 1
+    ## Database connection
+    db, cursor = get_db()
+    results, job_ids = [], []
 
-        # Adzuna does not have specific experience level field; infer experience from title/description
-        raw_desc = job.get("description", "") or ""
-        # strip basic HTML tags from description
-        desc = re.sub(r"<[^>]+>", "", raw_desc)
+    ## Iterate over each job result
+    for job in data.get("results", []):
+        title = job.get("title")
+        company = job.get("company", {}).get("display_name")
+        location_name = job.get("location", {}).get("display_name")
+        url_job = job.get("redirect_url")
+        description = re.sub(r"<[^>]+>", "", job.get("description", ""))
+        salary_min = job.get("salary_min")
+        salary_max = job.get("salary_max")
+        category = job.get("category", {}).get("label", "")
+        source = "api"
 
-        # extract a simple list of skills from the job description using the helper function
-        skills = _extract_resume_skills(desc)
-
-        # normalize salary fields to ints or None
-        def _to_int_or_none(v):
-            if v is None:
-                return None
+        ## UPSERT (insert or update existing)
+        if db:
             try:
-                return int(float(v))
-            except Exception:
-                # try to strip non-digits
-                s = re.sub(r"[^0-9.-]", "", str(v) or "")
-                try:
-                    return int(float(s))
-                except Exception:
-                    return None
+                cursor.execute(
+                    '''
+                    INSERT INTO jobs (title, company_name, industry, description, location, salary_range, source, url)
+                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
+                    ON DUPLICATE KEY UPDATE
+                        description = VALUES(description),
+                        salary_range = VALUES(salary_range),
+                        posted_at = CURRENT_TIMESTAMP
+                    ''',
+                    (title, company, category, description, location_name, f"{salary_min}-{salary_max}", source, url_job)
+                )
+                cursor.execute("SELECT job_id FROM jobs WHERE title=%s AND company_name=%s AND location=%s AND url=%s",
+                               (title, company, location_name, url_job))
+                job_id = cursor.fetchone()["job_id"]
+                job_ids.append(job_id)
+            except Exception as e:
+                app.logger.warning(f"Job UPSERT failed: {e}")
 
-        s_min = _to_int_or_none(job.get("salary_min"))
-        s_max = _to_int_or_none(job.get("salary_max"))
+        ## Return clean job JSON
+        results.append({
+            "title": title,
+            "company": company,
+            "location": location_name,
+            "url": url_job,
+            "description": description[:200],
+            "salary_min": salary_min,
+            "salary_max": salary_max,
+            "category": category
+        })
 
-        # infer experience level from title+description
-        exp_level = extract_experience_level_helper(f"{job.get('title','')} {desc}")
+    ## Return API response
+    return ok({
+        "count": len(results),
+        "persisted": len(job_ids),
+        "job_ids": job_ids,
+        "results": results
+    })
 
-        external_id = job.get("id") or job.get("ad_id") or job.get("redirect_url")
 
-        normalized_type = _normalize_contract_type(job, job.get('title',''), desc)
-
-        job_data = {
-            "job_id": jid,
-            "external_id": external_id,
-            "title": job.get("title"),
-            "company": job.get("company", {}).get("display_name", "Unknown"),
-            "location": job.get("location", {}).get("display_name", ""),
-            "url": job.get("redirect_url"),
-            "description": desc[:300],
-            "salary_min": s_min,
-            "salary_max": s_max,
-            "category": job.get("category", {}).get("label", ""),
-            "created": job.get("created"),
-            "skills": skills,
-            "experience_level": exp_level,
-            "type": normalized_type,
-            # preserve raw metadata that may help local filtering
-            "raw": job,
-        }
-
-        # Local filtering: if frontend asked for a job type or experience, try to filter heuristically
-        if job_type:
-            # common Adzuna field names for contract type vary; check raw data for matches
-            raw_type = (job.get("contract_time") or job.get("contract_type") or "")
-            if raw_type and job_type.lower() not in raw_type.lower():
-                # skip this job if it doesn't match requested type
-                continue
-
-        MEM["jobs"][jid] = job_data
-        results.append(job_data)
-
-    # Pagination, limit results to requested page size
-    resp = {
-        "results": results,
-        "total_results": total,
-        "totalResults": total,
-        "page": page,
-        "results_per_page": results_per_page,
-        "resultsPerPage": results_per_page,
-    }
-    
-    return ok(resp)
 
 # POST /api/recommend { "resume_id": int, "job_ids": [int] }
 @app.post("/api/recommend")

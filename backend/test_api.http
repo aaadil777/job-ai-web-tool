@@ -1,5 +1,5 @@
 ### Test 1: Valid POST Request
-POST http://127.0.0.1:5000/api/jobs/recommend
+POST http://127.0.0.1:5001/api/jobs/recommend
 Content-Type: application/json
 
 {
@@ -9,10 +9,20 @@ Content-Type: application/json
 }
 
 ### Test 2: Missing Field
-POST http://127.0.0.1:5000/api/jobs/recommend
+POST http://127.0.0.1:5001/api/jobs/recommend
 Content-Type: application/json
 
 {
   "job_title": "Operations Manager",
   "skills": ["leadership", "data analysis"]
+}
+
+### Test 3: Broader Adzuna Job Search
+POST http://127.0.0.1:5001/api/jobs/search
+Content-Type: application/json
+
+{
+  "query": "data analyst",
+  "location": "New York",
+  "resultsPerPage": 5
 }
