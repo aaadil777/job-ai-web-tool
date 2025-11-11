@@ -81,18 +81,32 @@ export default function AppliedJobs() {
 
 function JobCard({job, formatSalary}) {
   return (
-  <div className="job-card">
-    <div className="job-card-header">
-      <h2 className="job-title">{job.title}</h2>
-      <div className="company-name-and-location-and-type">{job.company} - {job.location} || {job.type}</div>
-      <div className="skills">Skills: {job.skills.join(", ")}</div>
-      <div className="salary-range">Salary: {formatSalary(job.salaryMin)} - {formatSalary(job.salaryMax)}</div>
-      <div className='job-experience'>Experience Level: {job.experience}</div>
-      <div className="job-match-score">Match Score: <strong>{job.matchScore}%</strong></div>
-      <div style={{ display:'flex', gap:10, justifyContent:'flex-end', padding:'14px 20px'}}>
-        <button style={{ padding:'4px 12px'}}>View</button>
+    <div data-slot="card" className="bg-card text-card-foreground border" style={{padding: '12px 16px'}}>
+      <div data-slot="card-header" style={{textAlign: 'left'}}>
+        <div style={{display:'flex', justifyContent:'space-between', gap:12, alignItems:'flex-start'}}>
+          <div style={{minWidth:0}}>
+            <h4 data-slot="card-title" style={{margin:0}}>{job.title}</h4>
+            <p data-slot="card-description">{job.company} · {job.location} {job.type ? `• ${job.type}` : ''}</p>
+
+            <div className="text-muted-foreground" style={{marginTop:6}}>
+              <div className="skills">Skills: {Array.isArray(job.skills) ? job.skills.join(', ') : (job.skills || '')}</div>
+              <div className="salary-range">Salary: {formatSalary(job.salaryMin)} - {formatSalary(job.salaryMax)}</div>
+              <div className='job-experience'>Experience: {job.experience}</div>
+            </div>
+          </div>
+
+          <div style={{textAlign:'right', minWidth:72}}>
+            <div className="text-muted-foreground" style={{marginBottom:6}}>Match</div>
+            <div><strong>{job.matchScore ?? 0}%</strong></div>
+          </div>
+        </div>
+      </div>
+
+      <div data-slot="card-content">
+        <div style={{ display:'flex', gap:8, justifyContent:'flex-end', paddingTop:6}}>
+          <a href={job.url || '#'}><button>View</button></a>
+        </div>
       </div>
     </div>
-  </div>
-);
+  );
 }

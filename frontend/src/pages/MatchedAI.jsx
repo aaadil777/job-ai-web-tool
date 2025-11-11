@@ -394,19 +394,33 @@ v-4.875c0-.621.504-1.125 1.125-1.125h2.25c.621 0 1.125.504 1.125 1.125V21h4.125c
 
 function JobCard({job, formatSalary, onGenerateCover}) {
   return (
-    <div className="job-card">
-      <div className="job-card-header">
-        <h2 className="job-title">{job.title}</h2>
-        <div className="company-name-and-location-and-type">{job.company} - {job.location} {job.type ? `|| ${job.type}` : ''}</div>
-        <div className="skills">Skills: {Array.isArray(job.skills) ? job.skills.join(", ") : (job.skills || '')}</div>
-        <div className="salary-range">Salary: {formatSalary(job.salaryMin)} - {formatSalary(job.salaryMax)}</div>
-        <div className='job-experience'>Experience Level: {job.experience}</div>
-        <div className="job-match-score">Match Score: <strong>{job.score ?? job.matchScore ?? 0}%</strong></div>
-        <div style={{ display:'flex', gap:10, justifyContent:'flex-end', padding:'14px 20px'}}>
-          <a href={job.url || '#'}><button style={{ padding:'4px 12px'}}>View</button></a>
-          <button style={{ padding:'4px 12px'}}>Save</button>
-          <button style={{ padding:'4px 12px'}}>Apply</button>
-          <button style={{ padding:'4px 12px' }} onClick={() => onGenerateCover && onGenerateCover()}>Generate Cover Letter</button>
+    <div data-slot="card" className="bg-card text-card-foreground border" style={{padding: '12px 16px'}}>
+      <div data-slot="card-header" style={{textAlign: 'left'}}>
+        <div style={{display:'flex', justifyContent:'space-between', gap:12, alignItems:'flex-start'}}>
+          <div style={{minWidth:0}}>
+            <h4 data-slot="card-title" style={{margin:0}}>{job.title}</h4>
+            <p data-slot="card-description">{job.company} · {job.location} {job.type ? `• ${job.type}` : ''}</p>
+
+            <div className="text-muted-foreground" style={{marginTop:6}}>
+              <div className="skills">Skills: {Array.isArray(job.skills) ? job.skills.join(', ') : (job.skills || '')}</div>
+              <div className="salary-range">Salary: {formatSalary(job.salaryMin)} - {formatSalary(job.salaryMax)}</div>
+              <div className='job-experience'>Experience: {job.experience}</div>
+            </div>
+          </div>
+
+          <div style={{textAlign:'right', minWidth:72}}>
+            <div className="text-muted-foreground" style={{marginBottom:6}}>Match</div>
+            <div><strong>{job.score ?? job.matchScore ?? 0}%</strong></div>
+          </div>
+        </div>
+      </div>
+
+  <div data-slot="card-content">
+        <div style={{ display:'flex', gap:8, justifyContent:'flex-end', paddingTop:6}}>
+          <a href={job.url || '#'}><button>View</button></a>
+          <button>Save</button>
+          <button>Apply</button>
+          <button onClick={() => onGenerateCover && onGenerateCover()}>Cover Letter</button>
         </div>
       </div>
     </div>
