@@ -2,8 +2,13 @@
 from __future__ import annotations
 import os, re, json, random, string
 import requests
-from datetime import datetime
+from datetime import datetime, UTC
 from typing import Any, Dict, List, Tuple
+
+from pathlib import Path
+from werkzeug.utils import secure_filename
+from pdfminer.high_level import extract_text as pdf_extract_text
+import mammoth
 
 from flask import Flask, request, jsonify
 from flask_cors import CORS
@@ -64,6 +69,31 @@ def get_db():
 
 # Try to connect once at startup (your original behavior)
 get_db()
+
+# -----------------------------
+# Resume Upload Helpers
+# -----------------------------
+
+# Define a max file size of 5MB
+app.config["MAX_CONTENT_LENGTH"] = 5 * 1024 * 1024
+
+# Only allow PDFs, Open XML, and TXT files 
+ALLOWED_MIME = {
+    "application/pdf",
+    "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+    "text/plain",
+}
+
+# *** CHANGE LATER IF NEEDED ***
+def _get_user_id():
+    """
+    Grab user id for the authenticated user.
+    """
+    h = request.headers.get("X-User-Id")
+    try:
+        return int(h) if h is not None else None
+    except Exception:
+        return None
 
 # -----------------------------
 # In-memory fallback store
@@ -176,7 +206,7 @@ def health():
     db, _ = get_db()
     info = {
         "status": "ok",
-        "time": datetime.utcnow().isoformat() + "Z",
+        "time": datetime.now(UTC).isoformat().replace("+00:00", "Z"),
         "use_db": bool(db),
         "env": os.getenv("FLASK_ENV", "unknown"),
     }
@@ -251,6 +281,150 @@ def upload_resume():
     rid = MEM["next_resume_id"]; MEM["next_resume_id"] += 1
     MEM["resumes"][rid] = {"user_id": None, "text": text, "file_name": fname, "name": "", "skills": [], "experience": ""}
     return ok({"resume_id": rid})
+
+@app.get("/api/resume")
+def resume_get_latest_meta():
+    """
+    Returns the latest resume metadata for the current user.
+    """
+    uid = _get_user_id()
+    db, cursor = get_db()
+
+    if db:
+        cursor.execute(
+            """
+            SELECT id, COALESCE(file_name, 'pasted-text') AS name, created_at
+            FROM resumes
+            WHERE (user_id <=> %s)
+            ORDER BY created_at DESC
+            LIMIT 1
+            """,
+            (uid,),
+        )
+        row = cursor.fetchone()
+        if not row:
+            return bad("No resume", 404)
+        return ok({
+            "resume_id": row["id"],
+            "name": row["name"],
+            "uploaded_at": (row["created_at"].isoformat() if row.get("created_at") else datetime.now(UTC).isoformat().replace("+00:00", "Z"))
+        })
+
+    # Find most recent by insertion order.
+    if not MEM["resumes"]:
+        return bad("No resume", 404)
+    # Prefer last created for the same user if present; else any last.
+    user_items = [(rid, r) for rid, r in MEM["resumes"].items() if r.get("user_id") == uid]
+    rid, r = (user_items[-1] if user_items else list(MEM["resumes"].items())[-1])
+    return ok({
+        "resume_id": rid,
+        "name": r.get("file_name") or "pasted-text",
+        "uploaded_at": datetime.now(UTC).isoformat().replace("+00:00", "Z")
+    })
+
+
+@app.put("/api/resume/<int:rid>")
+def resume_replace_existing(rid: int):
+    """
+    Replace an existing resume row with a new uploaded file.
+    Accepts multipart 'file'. Updates resume_text + file_name and bumps created_at.
+    """
+    uid = _get_user_id()
+    db, cursor = get_db()
+
+    if "file" not in request.files:
+        return bad("Missing 'file' in form-data")
+    f = request.files["file"]
+    if not f or not f.filename:
+        return bad("Empty file")
+
+    mime = f.mimetype or ""
+    if mime not in ALLOWED_MIME:
+        return bad("Only PDF, DOCX, or TXT allowed")
+
+    # Read content and convert to plain text
+    content = f.read() or b""
+    if mime == "application/pdf":
+        text = content.decode("utf-8", errors="ignore")
+    elif mime == "application/vnd.openxmlformats-officedocument.wordprocessingml.document":
+        text = content.decode("utf-8", errors="ignore")
+    else:
+        text = content.decode("utf-8", errors="ignore")
+
+    safe_name = secure_filename(f.filename)
+
+    if db:
+        # Ensure the row exists and belongs to this user
+        cursor.execute(
+            "SELECT id FROM resumes WHERE id=%s AND (user_id <=> %s)",
+            (rid, uid),
+        )
+        row = cursor.fetchone()
+        if not row:
+            return bad("Not found", 404)
+
+        cursor.execute(
+            """
+            UPDATE resumes
+            SET resume_text=%s, file_name=%s, created_at=NOW()
+            WHERE id=%s AND (user_id <=> %s)
+            """,
+            (text, safe_name, rid, uid),
+        )
+        # Fetch fresh metadata
+        cursor.execute(
+            "SELECT id, COALESCE(file_name, 'pasted-text') AS name, created_at FROM resumes WHERE id=%s",
+            (rid,),
+        )
+        fresh = cursor.fetchone()
+        return ok({
+            "resume_id": fresh["id"],
+            "name": fresh["name"],
+            "uploaded_at": fresh["created_at"].isoformat()
+        })
+
+    if rid not in MEM["resumes"] or MEM["resumes"][rid].get("user_id") != uid:
+        # Accept null user match in dev if uid is None and record has None
+        if not (rid in MEM["resumes"] and MEM["resumes"][rid].get("user_id") is None and uid is None):
+            return bad("Not found", 404)
+    MEM["resumes"][rid]["text"] = text
+    MEM["resumes"][rid]["file_name"] = safe_name
+    return ok({
+        "resume_id": rid,
+        "name": safe_name,
+        "uploaded_at": datetime.now(UTC).isoformat().replace("+00:00", "Z")
+    })
+
+
+@app.delete("/api/resume/<int:rid>")
+def resume_delete_existing(rid: int):
+    """
+    Delete a resume row. 204 on success.
+    """
+    uid = _get_user_id()
+    db, cursor = get_db()
+
+    if db:
+        cursor.execute(
+            "SELECT id FROM resumes WHERE id=%s AND (user_id <=> %s)",
+            (rid, uid),
+        )
+        row = cursor.fetchone()
+        if not row:
+            return bad("Not found", 404)
+        cursor.execute(
+            "DELETE FROM resumes WHERE id=%s AND (user_id <=> %s)",
+            (rid, uid),
+        )
+        return "", 204
+
+    r = MEM["resumes"].get(rid)
+    if not r:
+        return bad("Not found", 404)
+    if not (r.get("user_id") == uid or (r.get("user_id") is None and uid is None)):
+        return bad("Not found", 404)
+    del MEM["resumes"][rid]
+    return "", 204
 
 def extract_experience_level_helper(text: str) -> str:
     """Heuristic to infer experience level from free text.
