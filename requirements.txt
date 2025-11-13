@@ -3,7 +3,6 @@ Flask==3.0.3
 flask-cors==4.0.0
 python-dotenv==1.0.1
 requests==2.32.3
-mysql-connector-python==9.4.0
 
 # Flask deps compatible with Flask 3 on Python 3.9+
 click>=8.1.3,<9
@@ -19,7 +18,14 @@ idna>=3.6
 
 # ---- Streamlit UI
 streamlit==1.36.0
-pandas==2.2.2
+# pandas==2.2.2
 
 # ---- Gemini (chatbot)
 google-generativeai>=0.8.0
+# ---- SQL
+mysql-connector-python==9.4.0
+
+# ---- pdf reader
+pdfminer.six==20231228
+pdfplumber==0.11.3
+mammoth==1.7.0

@@ -1,4 +1,5 @@
 import pdfplumber, re
+from io import BytesIO
 from pprint import pprint
 
 class ParsingFunctionsPreLLM:
@@ -39,14 +40,10 @@ class ParsingFunctionsPreLLM:
         self.contacts = {}
         self.cleaned = {}
 
-    def extract_text_from_pdf(self):
-        """Extract text from a PDF file."""
-        with pdfplumber.open(self.path) as pdf:
-            self.unfiltered_text = "\n".join(
-                page.extract_text()
-                for page in pdf.pages
-                if page.extract_text()
-            )
+    def extract_text_from_pdf_bytes(self, content: bytes):
+        """Extract text from in-memory PDF bytes."""
+        with pdfplumber.open(BytesIO(content)) as pdf:
+            self.unfiltered_text = "\n".join((page.extract_text() or "") for page in pdf.pages)
         return self.unfiltered_text
     
     def clean_up_text(self,s):
@@ -98,10 +95,8 @@ class ParsingFunctionsPreLLM:
 
         return self.sections
     
-    def gather_contact_info(self):
+    def gather_contact_info_from_text(self, text: str):
         """Find and return all names, emails, phone numbers, and URLs."""
-        text = self.extract_text_from_pdf()
-
         emails = set(self.EMAIL_REGEX.findall(text))
         phones = set(self.PHONE_REGEX.findall(text))
         urls   = set(self.URL_REGEX.findall(text))
@@ -114,34 +109,8 @@ class ParsingFunctionsPreLLM:
         }
 
         return self.contacts
-    
-    def run_full_pipeline(self):
-        """Run the full pre-LLM filtering pipeline."""
-        text = self.extract_text_from_pdf()
-        self.define_sections(text)
-        self.gather_contact_info()
-        return {
-            "contacts": self.contacts,
-            "sections": self.sections,
-            "unfilered_text": self.unfiltered_text,
-        }
 
 
 if __name__ == "__main__":
     # import resume PDF file path into the parser class
     text_path = ParsingFunctionsPreLLM(r"ml\mock_resumes\Computer Science CAREER sample_1.pdf")
-
-    # Uncomment to test each function individually
-
-    # extract text from the PDF
-    extract_text = text_path.extract_text_from_pdf()
-    # print(extract_text)
-
-    # import the extracted text and define sections
-    #pprint(text_path.define_sections(extract_text))
-
-    # gather contact information
-    # pprint(text_path.gather_contact_info())
-
-    # run the full pre-LLM filtering pipeline
-    pprint(text_path.run_full_pipeline())

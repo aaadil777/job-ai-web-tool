@@ -4,7 +4,7 @@ CREATE DATABASE IF NOT EXISTS jobhunter_ai;
 USE jobhunter_ai;
 
 -- 1. USERS
-CREATE TABLE users (
+CREATE TABLE IF NOT EXISTS users (
     id INT AUTO_INCREMENT PRIMARY KEY,
     full_name VARCHAR(100) NOT NULL,
     email VARCHAR(100) UNIQUE NOT NULL,
@@ -14,7 +14,7 @@ CREATE TABLE users (
 );
 
 -- 2. USER PROFILES
-CREATE TABLE user_profiles (
+CREATE TABLE IF NOT EXISTS user_profiles (
     profile_id INT AUTO_INCREMENT PRIMARY KEY,
     user_id INT NOT NULL,
     experience_level ENUM('entry', 'mid', 'senior', 'executive') DEFAULT 'entry',
@@ -27,7 +27,7 @@ CREATE TABLE user_profiles (
 );
 
 -- 3. USER SKILLS
-CREATE TABLE user_skills (
+CREATE TABLE IF NOT EXISTS user_skills (
     id INT AUTO_INCREMENT PRIMARY KEY,
     user_id INT NOT NULL,
     skill_name VARCHAR(100) NOT NULL,
@@ -37,7 +37,7 @@ CREATE TABLE user_skills (
 );
 
 -- 4. EDUCATION
-CREATE TABLE education (
+CREATE TABLE IF NOT EXISTS education (
     edu_id INT AUTO_INCREMENT PRIMARY KEY,
     user_id INT NOT NULL,
     institution VARCHAR(150),
@@ -48,7 +48,7 @@ CREATE TABLE education (
 );
 
 -- 5. CERTIFICATIONS
-CREATE TABLE certifications (
+CREATE TABLE IF NOT EXISTS certifications (
     cert_id INT AUTO_INCREMENT PRIMARY KEY,
     user_id INT NOT NULL,
     certification_name VARCHAR(150),
@@ -59,18 +59,22 @@ CREATE TABLE certifications (
 );
 
 -- 6. RESUMES
-CREATE TABLE resumes (
-    resume_id INT AUTO_INCREMENT PRIMARY KEY,
-    user_id INT NOT NULL,
-    file_path VARCHAR(255),
-    parsed_text LONGTEXT,
-    upload_source ENUM('manual','parsed') DEFAULT 'manual',
-    uploaded_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+CREATE TABLE IF NOT EXISTS resumes (
+  id INT AUTO_INCREMENT PRIMARY KEY,
+  user_id INT NULL,                    -- **add later when authenticated user id is available**                              
+  resume_text LONGTEXT NOT NULL,
+  file_name VARCHAR(255) NULL,
+  parsed_sections JSON NULL,
+  parsed_contacts JSON NULL,
+  created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  INDEX idx_resumes_user_created (user_id, created_at DESC),
+  CONSTRAINT fk_resumes_user
     FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
 );
 
+
 -- 7. JOBS
-CREATE TABLE jobs (
+CREATE TABLE IF NOT EXISTS jobs (
     job_id INT AUTO_INCREMENT PRIMARY KEY,
     title VARCHAR(150) NOT NULL,
     company_name VARCHAR(150),
@@ -84,7 +88,7 @@ CREATE TABLE jobs (
 );
 
 -- 8. JOB RECOMMENDATIONS
-CREATE TABLE job_recommendations (
+CREATE TABLE IF NOT EXISTS job_recommendations (
     rec_id INT AUTO_INCREMENT PRIMARY KEY,
     user_id INT NOT NULL,
     job_id INT NOT NULL,
