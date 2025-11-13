@@ -338,6 +338,8 @@ def jobs_search():
     location = (data.get("location") or "").strip()
     page = int(data.get("page", 1))
     results_per_page = int(data.get("resultsPerPage", 10))
+    salary_min = data.get("salaryMin")
+    salary_max = data.get("salaryMax")
 
     if not query:
         return bad("Provide 'query' as a non-empty string")
@@ -359,6 +361,10 @@ def jobs_search():
         "what": query,
         "where": location
     }
+    if salary_min:
+        params["salary_min"] = salary_min
+    if salary_max:
+        params["salary_max"] = salary_max
 
     try:
         res = requests.get(url, params=params, timeout=10)
@@ -416,16 +422,25 @@ def jobs_search():
             "salary_max": salary_max,
             "category": category
         })
+    
+    total_results = data.get("count", len(results))
+    total_pages = (total_results + results_per_page - 1) // results_per_page
 
     ## Return API response
     return ok({
+        "query": query,
+        "location": location,
+        "page": page,
+        "results_per_page": results_per_page,
+        "salary_min": salary_min,
+        "salary_max": salary_max,
+        "total_results": total_results,
+        "total_pages": total_pages,
         "count": len(results),
         "persisted": len(job_ids),
         "job_ids": job_ids,
         "results": results
     })
-
-
 
 # POST /api/recommend { "resume_id": int, "job_ids": [int] }
 @app.post("/api/recommend")
