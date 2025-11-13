@@ -95,3 +95,37 @@ CREATE TABLE job_recommendations (
     FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
     FOREIGN KEY (job_id) REFERENCES jobs(job_id) ON DELETE CASCADE
 );
+
+-- 9. SAVED JOBS
+CREATE TABLE IF NOT EXISTS saved_jobs (
+    saved_job_id INT AUTO_INCREMENT PRIMARY KEY,
+    user_id INT NOT NULL,
+    job_id INT NOT NULL,
+    date_saved DATETIME DEFAULT CURRENT_TIMESTAMP,
+    notes VARCHAR(255),
+
+    CONSTRAINT fk_savedjobs_user
+        FOREIGN KEY (user_id)
+        REFERENCES users(id)
+        ON DELETE CASCADE,
+
+    CONSTRAINT fk_savedjobs_job
+        FOREIGN KEY (job_id)
+        REFERENCES jobs(job_id)
+        ON DELETE CASCADE
+);
+
+-- Prevent users from saving the same job multiple times
+ALTER TABLE saved_jobs
+    ADD UNIQUE KEY uq_user_job (user_id, job_id);
+
+-- 10. Ensure jobs table supports API persistence
+-- Add URL and source columns if missing (for Adzuna/API jobs)
+ALTER TABLE jobs
+    ADD COLUMN IF NOT EXISTS url VARCHAR(255),
+    ADD COLUMN IF NOT EXISTS source ENUM('internal','api') DEFAULT 'internal';
+
+-- Create a unique composite key to prevent duplicates
+-- This allows UPSERT (ON DUPLICATE KEY UPDATE) in Flask
+ALTER TABLE jobs
+    ADD UNIQUE KEY uq_job_unique (title, company_name, location, url);
