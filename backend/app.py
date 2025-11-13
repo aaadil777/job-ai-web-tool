@@ -479,8 +479,7 @@ def resume_get_latest_meta():
 @app.put("/api/resumes/<int:rid>")
 def resume_replace_existing(rid: int):
     """
-    Replace an existing resume row with a new uploaded file.
-    Accepts multipart 'file'. Updates resume_text + file_name and bumps created_at.
+    Replaces an existing resume with a new resume. Updates file info accordingly.
     """
     uid = _get_user_id()
     db, cursor = get_db()
