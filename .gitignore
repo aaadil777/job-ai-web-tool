@@ -13,7 +13,6 @@ __pycache__/
 backend/.env
 
 #node modules
-venv/
 frontend/node_modules/
 
 
