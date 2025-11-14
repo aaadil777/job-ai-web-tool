@@ -956,6 +956,111 @@ def chat():
 
     return ok({"reply": reply})
 
+## User Profile Endpoints (GET / PUT)
+def _get_current_user_id():
+    """Helper to extract the current user ID from headers (temporary mock auth)."""
+    uid = request.headers.get("X-User-Id")
+    if not uid:
+        return None
+    try:
+        return int(uid)
+    except ValueError:
+        return None
+
+
+@app.get("/api/users/me")
+def get_user_profile():
+    """Fetch current user's profile data."""
+    user_id = _get_current_user_id()
+    if not user_id:
+        return bad("Unauthorized: missing X-User-Id header", 401)
+
+    db, cursor = get_db()
+    if not db:
+        return bad("Database not configured", 500)
+
+    try:
+        cursor.execute("""
+            SELECT 
+                u.id AS user_id,
+                u.full_name,
+                u.email,
+                u.role,
+                p.location,
+                p.phone,
+                p.experience_level,
+                p.job_preferences,
+                p.desired_salary
+            FROM users u
+            LEFT JOIN user_profiles p ON u.id = p.user_id
+            WHERE u.id = %s
+        """, (user_id,))
+        row = cursor.fetchone()
+        if not row:
+            return bad("User not found", 404)
+
+        # Convert JSON string to dict
+        if isinstance(row.get("job_preferences"), str):
+            try:
+                row["job_preferences"] = json.loads(row["job_preferences"])
+            except Exception:
+                row["job_preferences"] = {}
+
+        return ok(row)
+    except Exception as e:
+        app.logger.exception(e)
+        return bad("Error fetching user profile", 500)
+
+
+@app.put("/api/users/me/profile")
+def update_user_profile():
+    """Update the current user's profile fields."""
+    user_id = _get_current_user_id()
+    if not user_id:
+        return bad("Unauthorized: missing X-User-Id header", 401)
+
+    data = request.get_json(force=True) or {}
+    full_name = data.get("full_name")
+    email = data.get("email")
+    role = data.get("role")
+    location = data.get("location")
+    phone = data.get("phone")
+    job_preferences = data.get("job_preferences") or {}
+    desired_salary = data.get("desired_salary")
+
+    db, cursor = get_db()
+    if not db:
+        return bad("Database not configured", 500)
+
+    try:
+        # Update base user info
+        if any([full_name, email, role]):
+            cursor.execute("""
+                UPDATE users
+                SET 
+                    full_name = COALESCE(%s, full_name),
+                    email = COALESCE(%s, email),
+                    role = COALESCE(%s, role)
+                WHERE id = %s
+            """, (full_name, email, role, user_id))
+
+        # Update or insert profile info
+        cursor.execute("""
+            INSERT INTO user_profiles (user_id, location, phone, job_preferences, desired_salary)
+            VALUES (%s, %s, %s, %s, %s)
+            ON DUPLICATE KEY UPDATE
+                location = VALUES(location),
+                phone = VALUES(phone),
+                job_preferences = VALUES(job_preferences),
+                desired_salary = VALUES(desired_salary)
+        """, (user_id, location, phone, json.dumps(job_preferences), desired_salary))
+
+        db.commit()
+        return ok({"message": "Profile updated successfully"})
+    except Exception as e:
+        db.rollback()
+        app.logger.exception(e)
+        return bad("Error updating profile", 500)
 
 # -----------------------------
 # Main
