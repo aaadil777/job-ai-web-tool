@@ -3,40 +3,168 @@ import { Link } from 'react-router-dom'
 import './jobAI.css'
 
 export default function Profile() {
-  useEffect(() => { document.title = 'Profile – jobhunter.ai' }, [])
-
-  // Placeholder for database/API fetch logic
-  useEffect(() => {
-    async function fetchData() {
-      // TODO: Insert API/database fetch call here
-    }
-    fetchData()
-  }, [])
+  const DEV_HEADERS = { 'X-User-Id': '1' }
 
   const [editing, setEditing] = useState(false)
+  const [loading, setLoading] = useState(true)
+  const [saving, setSaving] = useState(false)
+  const [err, setErr] = useState('')
+  const [resumeMeta, setResumeMeta] = useState(null)
+
   const [profileData, setProfileData] = useState({
     name: '—',
-    role: '—',
+    title: '—',
     email: '—',
     location: '—',
-    phone: '—'
+    phone: '—',
+    desired_salary: ''
   })
 
-  const handleEditToggle = () => {
-    setEditing(!editing)
+  // server-saved vs in-progress job preferences
+  const [savedPrefs, setSavedPrefs] = useState({
+    pref_location: '',
+    pref_type: '',
+    pref_salary: ''
+  })
+  const [draftPrefs, setDraftPrefs] = useState({
+    pref_location: '',
+    pref_type: '',
+    pref_salary: ''
+  })
+  const [prefsEditing, setPrefsEditing] = useState(false)
+
+  const handlePrefsEditToggle = () => {
+    // reset draft to saved when entering edit mode
+    setDraftPrefs(savedPrefs)
+    setPrefsEditing(v => !v)
   }
 
-  const handleSubmit = (e) => {
+  useEffect(() => { document.title = 'Profile – jobhunter.ai' }, [])
+
+  useEffect(() => {
+    (async () => {
+      setLoading(true)
+      setErr('')
+      try {
+        // Profile
+        const res = await fetch('/api/users/me', { headers: DEV_HEADERS })
+        if (!res.ok) throw new Error(await res.text())
+        const data = await res.json()
+
+        setProfileData({
+          name: data.name ?? '—',
+          title: data.title ?? '—',
+          email: data.email ?? '—',
+          location: data.location ?? '—',
+          phone: data.phone ?? '—',
+          desired_salary: data.desired_salary ?? ''
+        })
+
+        const initialSaved = {
+          pref_location: data.pref_locations ?? '',
+          pref_type: data.pref_type ?? '',
+          pref_salary: data.pref_salary ?? ''
+        }
+        setSavedPrefs(initialSaved)
+        setDraftPrefs(initialSaved)
+
+        // Resume meta
+        try {
+          const r = await fetch('/api/resumes', { headers: DEV_HEADERS })
+          setResumeMeta(r.ok ? await r.json() : null)
+        } catch {
+          setResumeMeta(null)
+        }
+      } catch (e) {
+        console.error('Failed to load profile:', e)
+        setErr('Failed to load profile.')
+      } finally {
+        setLoading(false)
+      }
+    })()
+  }, [])
+
+  const handleEditToggle = () => setEditing(v => !v)
+
+  const handleSubmit = async (e) => {
     e.preventDefault()
+    setErr('')
+    setSaving(true)
+
     const formData = new FormData(e.target)
-    setProfileData({
-      name: formData.get('name') || '—',
-      role: formData.get('role') || '—',
-      email: formData.get('email') || '—',
-      location: formData.get('location') || '—',
-      phone: formData.get('phone') || '—'
-    })
-    setEditing(false)
+    const next = {
+      name: formData.get('name') || '',
+      title: formData.get('title') || '',
+      email: formData.get('email') || '',
+      location: formData.get('location') || '',
+      phone: formData.get('phone') || '',
+      desired_salary: formData.get('desired_salary') || ''
+    }
+
+    try {
+      const res = await fetch('/api/users/me/profile', {
+        method: 'PUT',
+        headers: { ...DEV_HEADERS, 'Content-Type': 'application/json' },
+        body: JSON.stringify(next)
+      })
+      if (!res.ok) throw new Error(await res.text())
+
+      // Update UI after success
+      setProfileData(p => ({ ...p, ...next }))
+      setEditing(false)
+      console.log('Profile saved successfully.')
+    } catch (e) {
+      console.error('Save failed:', e)
+      setErr('Save failed.')
+    } finally {
+      setSaving(false)
+    }
+  }
+
+  const handlePrefsSubmit = async (e) => {
+    e.preventDefault()
+    setErr('')
+    setSaving(true)
+
+    const pref_location_raw = draftPrefs.pref_location.trim()
+    const pref_type = draftPrefs.pref_type.trim()
+    const pref_salary_raw = draftPrefs.pref_salary.trim()
+    const pref_salary = pref_salary_raw.replace(/[^\d.\-]/g, '')
+
+    try {
+      const res = await fetch('/api/users/me/profile', {
+        method: 'PUT',
+        headers: { ...DEV_HEADERS, 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          pref_location: pref_location_raw,
+          pref_type,
+          pref_salary,
+          job_preferences: {
+            locations: pref_location_raw
+              ? pref_location_raw.split(',').map(s => s.trim()).filter(Boolean)
+              : [],
+            type: pref_type || ''
+          }
+        })
+      })
+      if (!res.ok) throw new Error(await res.text())
+
+      console.log('Preferences saved.')
+
+      const updated = {
+        pref_location: pref_location_raw,
+        pref_type,
+        pref_salary
+      }
+      setSavedPrefs(updated)
+      setDraftPrefs(updated)
+      setPrefsEditing(false)
+    } catch (e) {
+      console.error('Save prefs failed:', e)
+      setErr('Saving preferences failed.')
+    } finally {
+      setSaving(false)
+    }
   }
 
   return (
@@ -80,15 +208,24 @@ export default function Profile() {
               </div>
 
               <h4 data-slot="card-title" className="leading-none" id="profileName">{profileData.name}</h4>
-              <p data-slot="card-description" className="text-muted-foreground" id="profileRole">{profileData.role}</p>
+              <p data-slot="card-description" className="text-muted-foreground" id="profileRole">{profileData.title}</p>
             </div>
 
             <div data-slot="card-content" className="px-6 pb-6 space-y-4" style={{ width: '100%', maxWidth: '680px', margin: '0 auto' }}>
+              {loading && <div className="text-muted-foreground">Loading profile…</div>}
+              {err && <div style={{ color: 'crimson' }}>{err}</div>}
+
+              {/* Personal information */}
               <section aria-labelledby="personal-info">
                 <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: '12px' }}>
-                  <h5 id="personal-info" style={{ margin: 0, fontWeight: 700 }}>Personal information</h5>
+                  <h3 id="personal-info" style={{ margin: 0, fontWeight: 700 }}>Personal information</h3>
                   <div>
-                    <button id="editProfileBtn" onClick={handleEditToggle} style={{ padding: '8px 10px', borderRadius: '8px', border: '1px solid var(--border)', background: 'transparent', color: 'var(--ink)' }}>
+                    <button
+                      id="editProfileBtn"
+                      onClick={handleEditToggle}
+                      disabled={loading || saving}
+                      style={{ padding: '8px 10px', borderRadius: '8px', border: '1px solid var(--border)', background: 'transparent', color: 'var(--ink)' }}
+                    >
                       {editing ? 'Cancel' : 'Edit'}
                     </button>
                   </div>
@@ -117,12 +254,16 @@ export default function Profile() {
                   <form id="profileEdit" onSubmit={handleSubmit} style={{ marginTop: '12px', gap: '8px' }}>
                     <div style={{ display: 'flex', gap: '8px', flexWrap: 'wrap' }}>
                       <input name="name" placeholder="Full name" defaultValue={profileData.name === '—' ? '' : profileData.name} style={{ flex: 1, padding: '8px', borderRadius: '8px', border: '1px solid var(--border)', background: 'transparent', color: 'var(--ink)' }} />
-                      <input name="role" placeholder="Role / Title" defaultValue={profileData.role === '—' ? '' : profileData.role} style={{ flex: 1, padding: '8px', borderRadius: '8px', border: '1px solid var(--border)', background: 'transparent', color: 'var(--ink)' }} />
+                      <input name="title" placeholder="Role / Title" defaultValue={profileData.title === '—' ? '' : profileData.title} style={{ flex: 1, padding: '8px', borderRadius: '8px', border: '1px solid var(--border)', background: 'transparent', color: 'var(--ink)' }} />
                     </div>
                     <div style={{ display: 'flex', gap: '8px', flexWrap: 'wrap', marginTop: '8px' }}>
                       <input name="email" placeholder="Email" defaultValue={profileData.email === '—' ? '' : profileData.email} style={{ flex: 1, padding: '8px', borderRadius: '8px', border: '1px solid var(--border)', background: 'transparent', color: 'var(--ink)' }} />
                       <input name="location" placeholder="Location" defaultValue={profileData.location === '—' ? '' : profileData.location} style={{ flex: 1, padding: '8px', borderRadius: '8px', border: '1px solid var(--border)', background: 'transparent', color: 'var(--ink)' }} />
                       <input name="phone" placeholder="Phone" defaultValue={profileData.phone === '—' ? '' : profileData.phone} style={{ flex: 1, padding: '8px', borderRadius: '8px', border: '1px solid var(--border)', background: 'transparent', color: 'var(--ink)' }} />
+                    </div>
+                    <div style={{ display: 'flex', gap: '8px', alignItems: 'center' }}>
+                      <label style={{ margin: 0, fontSize: '14px', color: 'var(--muted)', minWidth: '120px' }}>Desired salary</label>
+                      <input name="desired_salary" placeholder="$80,000" defaultValue={profileData.desired_salary || ''} style={{ flex: 1, padding: '8px', borderRadius: '8px', border: '1px solid var(--border)', background: 'transparent', color: 'var(--ink)' }} />
                     </div>
                     <div style={{ display: 'flex', gap: '8px', justifyContent: 'flex-end', marginTop: '10px' }}>
                       <button type="button" id="cancelEdit" onClick={() => setEditing(false)} style={{ padding: '8px 12px', borderRadius: '8px', border: '1px solid var(--border)', background: 'transparent', color: 'var(--ink)' }}>Cancel</button>
@@ -132,41 +273,106 @@ export default function Profile() {
                 )}
               </section>
 
+              {/* Resumes */}
               <section aria-labelledby="resumes" style={{ marginTop: '6px' }}>
                 <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-                  <h5 id="resumes" style={{ margin: 0, fontWeight: 700 }}>Resumes</h5>
+                  <h3 id="resumes" style={{ margin: 0, fontWeight: 700 }}>Resumes</h3>
+                  <div>
+                    <Link to="/resume_upload" className="nav-link" style={{ padding: '6px 10px', border: '1px solid var(--border)', borderRadius: '8px' }}>
+                      {resumeMeta ? 'Re-upload' : 'Upload'}
+                    </Link>
+                  </div>
                 </div>
 
                 <ul id="resumeList" style={{ listStyle: 'none', padding: 0, margin: '12px 0', display: 'flex', flexDirection: 'column', gap: '8px' }}>
-                  {/* populated dynamically */}
+                  {resumeMeta ? (
+                    <li style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                      <div>
+                        <div style={{ display: 'flex', gap: '8px', flexWrap: 'wrap', marginTop: '8px' }}>{resumeMeta.name}</div>
+                        <div className="text-muted-foreground" style={{ fontSize: '12px' }}>
+                          Uploaded at {new Date(resumeMeta.uploaded_at).toLocaleString()}
+                        </div>
+                      </div>
+                    </li>
+                  ) : (
+                    <li className="text-muted-foreground">No resume on file.</li>
+                  )}
                 </ul>
               </section>
 
+              {/* Job Preferences */}
               <section aria-labelledby="preferences" style={{ marginTop: '6px' }}>
-                <h5 id="preferences" style={{ margin: '0 0 8px 0', fontWeight: 700 }}>Job preferences</h5>
-                <form id="prefsForm" style={{ display: 'grid', gap: '8px' }}>
-                  <div style={{ display: 'flex', gap: '8px', flexWrap: 'wrap' }}>
-                    <input name="pref_location" placeholder="Preferred locations (comma separated)" style={{ flex: 1, padding: '8px', borderRadius: '8px', border: '1px solid var(--border)', background: 'transparent', color: 'var(--ink)' }} />
-                    <select name="pref_type" style={{ minWidth: '160px', padding: '8px', borderRadius: '8px', border: '1px solid var(--border)', background: 'transparent', color: 'var(--ink)' }}>
-                      <option value="">Any type</option>
-                      <option>Full-time</option>
-                      <option>Part-time</option>
-                      <option>Contract</option>
-                      <option>Remote</option>
-                    </select>
+                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: '12px' }}>
+                  <h3 id="preferences" style={{ margin: '0 0 8px 0', fontWeight: 700 }}>Job Preferences</h3>
+                  <div>
+                    <button
+                      onClick={handlePrefsEditToggle}
+                      disabled={loading || saving}
+                      style={{ padding: '8px 10px', borderRadius: '8px', border: '1px solid var(--border)', background: 'transparent', color: 'var(--ink)' }}
+                    >
+                      {prefsEditing ? 'Cancel' : 'Edit'}
+                    </button>
                   </div>
+                </div>
 
-                  <div style={{ display: 'flex', gap: '8px', alignItems: 'center' }}>
-                    <label style={{ margin: 0, fontSize: '14px', color: 'var(--muted)', minWidth: '120px' }}>Desired salary</label>
-                    <input name="pref_salary" placeholder="$80,000" style={{ flex: 1, padding: '8px', borderRadius: '8px', border: '1px solid var(--border)', background: 'transparent', color: 'var(--ink)' }} />
+                {/* View Edited Job Preferences) */}
+                {!prefsEditing && (
+                  <div className="text-muted-foreground" style={{ marginTop: '12px' }}>
+                    <div><strong>Saved locations:</strong> {savedPrefs.pref_location || '—'}</div>
+                    <div><strong>Saved type:</strong> {savedPrefs.pref_type || 'Any type'}</div>
+                    <div><strong>Saved desired salary:</strong> {savedPrefs.pref_salary || '—'}</div>
                   </div>
+                )}
 
-                  <div style={{ display: 'flex', justifyContent: 'flex-end', marginTop: '8px' }}>
-                    <button type="submit" style={{ padding: '8px 12px', borderRadius: '8px', background: 'var(--brand)', border: 0, color: '#07120c', fontWeight: 600 }}>Save preferences</button>
-                  </div>
-                </form>
+                {/* Edit Job Preferences */}
+                {prefsEditing && (
+                  <form id="prefsForm" onSubmit={handlePrefsSubmit} style={{ marginTop: '12px', gap: '8px' }}>
+                    <div style={{ display: 'flex', gap: '8px', flexWrap: 'wrap' }}>
+                      <input
+                        name="pref_location"
+                        placeholder="Preferred locations (comma separated)"
+                        value={draftPrefs.pref_location}
+                        onChange={(e) => setDraftPrefs(p => ({ ...p, pref_location: e.target.value }))}
+                        style={{ flex: 1, padding: '8px', borderRadius: '8px', border: '1px solid var(--border)', background: 'transparent', color: 'var(--ink)' }}
+                      />
+                      <select
+                        name="pref_type"
+                        value={draftPrefs.pref_type}
+                        onChange={(e) => setDraftPrefs(p => ({ ...p, pref_type: e.target.value }))}
+                        style={{ minWidth: '160px', padding: '8px', borderRadius: '8px', border: '1px solid var(--border)', background: 'transparent', color: 'var(--ink)' }}
+                      >
+                        <option value="">Any type</option>
+                        <option>Full-time</option>
+                        <option>Part-time</option>
+                        <option>Contract</option>
+                        <option>Remote</option>
+                      </select>
+                    </div>
+
+                    <div style={{ display: 'flex', gap: '8px', alignItems: 'center', marginTop: '8px' }}>
+                      <label style={{ margin: 0, fontSize: '14px', color: 'var(--muted)', minWidth: '120px' }}>Desired salary</label>
+                      <input
+                        name="pref_salary"
+                        placeholder="$80,000"
+                        value={draftPrefs.pref_salary}
+                        onChange={(e) => setDraftPrefs(p => ({ ...p, pref_salary: e.target.value }))}
+                        style={{ flex: 1, padding: '8px', borderRadius: '8px', border: '1px solid var(--border)', background: 'transparent', color: 'var(--ink)' }}
+                      />
+                    </div>
+
+                    <div style={{ display: 'flex', gap: '8px', justifyContent: 'flex-end', marginTop: '10px' }}>
+                      <button type="button" onClick={handlePrefsEditToggle} style={{ padding: '8px 12px', borderRadius: '8px', border: '1px solid var(--border)', background: 'transparent', color: 'var(--ink)' }}>
+                        Cancel
+                      </button>
+                      <button type="submit" disabled={saving} style={{ padding: '8px 12px', borderRadius: '8px', background: 'var(--brand)', border: 0, color: '#07120c', fontWeight: 600 }}>
+                        Save
+                      </button>
+                    </div>
+                  </form>
+                )}
               </section>
 
+              {/* Security */}
               <section style={{ marginTop: '6px' }}>
                 <h5 style={{ margin: '0 0 8px 0', fontWeight: 700 }}>Security</h5>
                 <div style={{ display: 'flex', gap: '8px', flexWrap: 'wrap' }}>

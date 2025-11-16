@@ -388,6 +388,11 @@ label{
   flex:0 0 10px;
 }
 
+select option {
+  background-color: #ffffff; 
+  color: #111111;           
+}
+
 /* Responsive adjustments */
 @media (max-width:880px){
   nav.sidebar{display:none}
