@@ -403,10 +403,7 @@ export function JobMatches() {
       return false;
     }
 
-    // Employment type filter
-    if (employmentTypeFilter !== "all" && job.employmentType !== employmentTypeFilter) {
-      return false;
-    }
+    // Employment type filter removed (server-side should provide filtered results / parent controls the list)
 
     // Shift filter
     if (shiftFilter !== "all" && job.shift !== shiftFilter) {

@@ -13,6 +13,7 @@ from pathlib import Path
 import mammoth
 import pdfplumber
 from io import BytesIO
+import html as _html
 
 from flask import Flask, request, jsonify
 from flask_cors import CORS
@@ -31,6 +32,9 @@ import google.generativeai as genai
 # -----------------------------
 load_dotenv()
 app = Flask(__name__)
+
+# Config: allow configuring how many characters of job description to return
+JOB_DESCRIPTION_MAX_CHARS = int(os.getenv("JOB_DESCRIPTION_MAX_CHARS", "2000"))
 
 # Log whether Adzuna creds are available (do not print the secrets)
 if os.getenv("ADZUNA_APP_ID") and os.getenv("ADZUNA_APP_KEY"):
@@ -707,38 +711,83 @@ def extract_experience_level_helper(text: str) -> str:
 
 
 def _normalize_contract_type(job_raw: dict, title: str, description: str) -> str:
-    """Normalize job type into friendly labels.
+    """FALL BACK heuristic to:
 
+    Normalize job type into friendly labels.
     Returns one of: 'Full-time', 'Part-time', 'Contract', 'Internship', 'Remote', ''
     """
+    # Ensure job_raw is a dict-like object
     if not isinstance(job_raw, dict):
         job_raw = {}
-    ct = (job_raw.get("contract_time") or job_raw.get("contract_type") or "").strip().lower()
-    if ct:
-        if "full" in ct or "permanent" in ct:
-            return "Full-time"
-        if "part" in ct:
-            return "Part-time"
-        if "contract" in ct or "temporary" in ct:
-            return "Contract"
-        if "intern" in ct:
-            return "Internship"
-        if "remote" in ct:
-            return "Remote"
-        if "hybrid" in ct:
-            return "Hybrid"
 
-    # fallback: look into title and description heuristics
-    txt = f"{title or ''} {description or ''}".lower()
-    if "remote" in txt:
-        return "Remote"
-    if "part-time" in txt or "part time" in txt:
+    # Combine structured contract fields with title/description for a single search space
+    parts: List[str] = []
+    for k in ("contract_time", "contract_type"):
+        v = job_raw.get(k)
+        if v:
+            parts.append(str(v))
+    parts.append(str(title or ""))
+    parts.append(str(description or ""))
+    txt = " ".join(parts).lower()
+
+    # Phrase-first patterns (use word boundaries to avoid accidental matches like 'part' in 'participants')
+    patterns = [
+        (r"\b(full[\s-]*time|fte|full\s+time|permanent)\b", "Full-time"),
+        (r"\b(part[\s-]*time)\b", "Part-time"),
+        (r"\b(contract|temporary)\b", "Contract"),
+        (r"\b(intern(ship)?|intern)\b", "Internship"),
+        (r"\bremote\b", "Remote"),
+        (r"\bhybrid\b", "Hybrid"),
+    ]
+
+    for pattern, label in patterns:
+        try:
+            if re.search(pattern, txt, re.IGNORECASE):
+                return label
+        except re.error:
+            # if a regex fails for any reason, skip and continue
+            continue
+
+    return ""
+
+
+def _canonicalize_type_input(s: str) -> str:
+    """Map various user-provided job type labels into canonical labels used by the API.
+
+    Returns values like: 'Full-time', 'Part-time', 'Contract', 'Internship', 'Remote', 'Hybrid', or ''
+    """
+    if not s:
+        return ""
+    s2 = s.strip().lower()
+    if re.search(r"full[\s_-]*time|^fulltime$|^full-time$|^fte|permanent", s2):
+        return "Full-time"
+    if re.search(r"part[\s_-]*time|^parttime$|^part-time$", s2):
         return "Part-time"
-    if "contract" in txt or "temporary" in txt:
+    if re.search(r"contract|temporary|temp|c2h|c2c|contract-to-hire|contract to hire", s2):
         return "Contract"
-    if "intern" in txt or "internship" in txt:
+    if re.search(r"intern(ship)?|^intern$", s2):
         return "Internship"
+    if re.search(r"\bremote\b", s2):
+        return "Remote"
+    if re.search(r"\bhybrid\b", s2):
+        return "Hybrid"
+    return s.strip().replace("_", " ").replace("-", " ").title()
 
+
+def _canonicalize_experience_input(s: str) -> str:
+    """Map various user-provided experience labels into canonical experience_level values.
+
+    Returns one of: 'entry', 'mid', 'senior', or '' (empty string for unknown).
+    """
+    if not s:
+        return ""
+    t = s.strip().lower()
+    if re.search(r"entry|intern|junior|fresher|new\s+grad|graduate", t):
+        return "entry"
+    if re.search(r"mid|associate|intermediate", t):
+        return "mid"
+    if re.search(r"senior|sr\.?|lead|principal|director|vp|manager", t):
+        return "senior"
     return ""
 
 
@@ -749,8 +798,13 @@ def jobs_search():
     data = request.get_json(force=True) or {}
     query = (data.get("query") or "").strip()
     location = (data.get("location") or "").strip()
+    # Optional filters (type and experience now provided by frontend)
+    job_type_filter = (data.get("type") or "").strip()
+    experience_filter = (data.get("experience") or "").strip()
     page = int(data.get("page", 1))
-    results_per_page = int(data.get("resultsPerPage", 10))
+    # Enforce a single allowed page size for Adzuna results: 30 per user requirement
+    # Ignore any client-provided value and always request 30 results per page
+    results_per_page = 30
     salary_min = data.get("salaryMin")
     salary_max = data.get("salaryMax")
 
@@ -767,12 +821,27 @@ def jobs_search():
 
     ## Build Adzuna request
     url = f"https://api.adzuna.com/v1/api/jobs/{country}/search/{page}"
+
+    # Build 'what' by appending textual qualifiers so Adzuna performs a best-effort filtered search.
+    # NOTE: Do NOT append the client's `type` filter here — Appending literal labels
+    # like "Full-time" to Adzuna's free-text query often over-constrains results and
+    # returns zero matches. We perform deterministic server-side post-filtering on
+    # our normalized `type` instead. Only append `experience` as a textual qualifier.
+    # Canonicalize experience before appending to avoid over-constraining the provider
+    # (send 'entry'|'mid'|'senior' tokens rather than display labels like 'Entry').
+    qualifiers = []
+    canon_exp = _canonicalize_experience_input(experience_filter)
+    if canon_exp:
+        qualifiers.append(canon_exp)
+
+    what_query = " ".join([query] + qualifiers).strip()
+
     params = {
         "app_id": app_id,
         "app_key": app_key,
         "results_per_page": results_per_page,
-        "what": query,
-        "where": location
+        "what": what_query,
+        "where": location,
     }
     if salary_min:
         params["salary_min"] = salary_min
@@ -797,11 +866,18 @@ def jobs_search():
         company = job.get("company", {}).get("display_name")
         location_name = job.get("location", {}).get("display_name")
         url_job = job.get("redirect_url")
-        description = re.sub(r"<[^>]+>", "", job.get("description", ""))
-        salary_min = job.get("salary_min")
-        salary_max = job.get("salary_max")
+        raw_description = job.get("description", "") or ""
+        # Unescape HTML entities then strip tags
+        unescaped_description = _html.unescape(raw_description)
+        description = re.sub(r"<[^>]+>", "", unescaped_description)
+        job_salary_min = job.get("salary_min")
+        job_salary_max = job.get("salary_max")
         category = job.get("category", {}).get("label", "")
         source = "api"
+
+        # Infer experience level from title+description
+        exp_text = f"{title or ''} {description or ''}"
+        experience_level = extract_experience_level_helper(exp_text)
 
         ## UPSERT (insert or update existing)
         if db:
@@ -824,35 +900,166 @@ def jobs_search():
             except Exception as e:
                 app.logger.warning(f"Job UPSERT failed: {e}")
 
+        # Normalize contract/type and include raw fields so clients can rely on a consistent `type` value
+        # Prefer Adzuna's structured contract fields when present. Only fall back to
+        # our heuristic `_normalize_contract_type` when Adzuna provides no useful value.
+        adz_contract_time = job.get("contract_time")
+        adz_contract_type = job.get("contract_type")
+        adz_type_raw = None
+        for k in ("type", "employment_type"):
+            v = job.get(k)
+            if v:
+                adz_type_raw = str(v).strip()
+                break
+
+        # Map common Adzuna contract_time values to our labels
+        if adz_contract_time:
+            act = str(adz_contract_time).lower()
+            if act in {"full_time", "full-time", "full time", "permanent", "fte"}:
+                job_type = "Full-time"
+            elif act in {"part_time", "part-time", "part time"}:
+                job_type = "Part-time"
+            elif act in {"contract", "temporary", "temp"}:
+                job_type = "Contract"
+            elif act in {"internship", "intern"}:
+                job_type = "Internship"
+            else:
+                # use fallback normalization on the raw value
+                job_type = _normalize_contract_type(job, title, description)
+        elif adz_contract_type:
+            # contract_type can be values like 'permanent' or 'contract'
+            act = str(adz_contract_type).lower()
+            if act in {"permanent", "permanent contract", "permanent-hire"}:
+                job_type = "Full-time"
+            elif act in {"contract", "temporary", "temp"}:
+                job_type = "Contract"
+            else:
+                job_type = _normalize_contract_type(job, title, description)
+        elif adz_type_raw:
+            # Map textual type/employment_type values
+            s = adz_type_raw.lower()
+            if re.search(r"(full[\s_-]*time|fte|permanent|full time|fulltime)", s):
+                job_type = "Full-time"
+            elif re.search(r"(part[\s_-]*time|part time|parttime)", s):
+                job_type = "Part-time"
+            elif re.search(r"(contract|temporary|temp|c2h|c2c|contract-to-hire|contract to hire)", s):
+                job_type = "Contract"
+            elif re.search(r"(intern(ship)?|intern)", s):
+                job_type = "Internship"
+            elif re.search(r"\bremote\b", s):
+                job_type = "Remote"
+            elif re.search(r"\bhybrid\b", s):
+                job_type = "Hybrid"
+            else:
+                job_type = str(adz_type_raw).replace("_", " ").replace("-", " ").title()
+        else:
+            # No Adzuna-provided type info — run our heuristic on title/description
+            job_type = _normalize_contract_type(job, title, description)
+
         ## Return clean job JSON
         results.append({
             "title": title,
             "company": company,
             "location": location_name,
             "url": url_job,
-            "description": description[:200],
-            "salary_min": salary_min,
-            "salary_max": salary_max,
-            "category": category
+            "description": (description or "")[:JOB_DESCRIPTION_MAX_CHARS],
+            # Full cleaned description (not truncated). Frontend can show this in a modal/detail view.
+            "full_description": (description or ""),
+            "salary_min": job_salary_min,
+            "salary_max": job_salary_max,
+            "category": category,
+            "type": job_type,
+            # Provide both keys so frontend can consume either one
+            "experience": experience_level,
+            "experience_level": experience_level,
+            "raw": job,
         })
-    
-    total_results = data.get("count", len(results))
+
+
+    # Deterministic post-filtering: apply server-side filters for type and
+    # experience so the returned result set strictly matches requested filters.
+    # This operates on our normalized values (the `type` field and
+    # `experience_level` field we set above).
+    post_filtered_results = list(results)
+    want_label = _canonicalize_type_input(job_type_filter)
+    want_exp = _canonicalize_experience_input(experience_filter)
+
+    # If a type was requested, keep only jobs with the normalized type
+    if want_label:
+        post_filtered_results = [r for r in post_filtered_results if (r.get("type") or "") == want_label]
+
+    # If an experience was requested, keep only jobs with matching experience_level
+    if want_exp:
+        post_filtered_results = [r for r in post_filtered_results if (r.get("experience_level") or "").lower() == want_exp]
+
+    filtered_total = len(post_filtered_results)
+
+    # If the client requested qualifiers (type/experience) and Adzuna returned zero
+    # results for that qualified query, do a best-effort fallback: re-query without
+    # the qualifiers to obtain an unfiltered count so the UI can show an alternative.
+    unfiltered_total = None
+    filter_applied_but_no_results = False
+    if (job_type_filter or experience_filter) and (filtered_total == 0):
+        try:
+            # Build params without qualifiers (just the base query)
+            params_no_qual = params.copy()
+            params_no_qual["what"] = query
+            res2 = requests.get(url, params=params_no_qual, timeout=10)
+            res2.raise_for_status()
+            data2 = res2.json()
+            unfiltered_total = data2.get("count", 0)
+            filter_applied_but_no_results = True if (unfiltered_total and unfiltered_total > 0) else False
+        except Exception as e:
+            app.logger.info(f"Fallback unfiltered Adzuna query failed: {e}")
+            unfiltered_total = None
+
+    # Adzuna's provider count for the original query we issued (best-effort)
+    adzuna_count = data.get("count", len(results)) if isinstance(data, dict) else len(results)
+
+    # Decide what to report as the authoritative total_results:
+    # - If the client did not request any filters (type/experience), prefer
+    #   Adzuna's provider count (adzuna_count) since it reflects the total
+    #   upstream matching jobs across pages.
+    # - If the client requested filters and we applied deterministic
+    #   post-filtering, report the filtered_total (which currently reflects
+    #   matches within the fetched page). Computing the exact filtered total
+    #   across all pages would require additional provider queries and is
+    #   intentionally left out for performance; instead we also include
+    #   `provider_total_results` for transparency.
+    if not (job_type_filter or experience_filter):
+        total_results = int(adzuna_count or 0)
+    else:
+        total_results = filtered_total
+
     total_pages = (total_results + results_per_page - 1) // results_per_page
+
+    # If the client requested a job type, return the post-filtered results
+    # (deterministic). Otherwise, return the raw results from Adzuna.
+    results_to_return = post_filtered_results if want_label or want_exp else results
 
     ## Return API response
     return ok({
         "query": query,
         "location": location,
+        "type": job_type_filter,
+        "experience": experience_filter,
         "page": page,
         "results_per_page": results_per_page,
         "salary_min": salary_min,
         "salary_max": salary_max,
         "total_results": total_results,
         "total_pages": total_pages,
-        "count": len(results),
+        # Surface the Adzuna provider's raw count so the UI can explain when
+        # our deterministic post-filtering reduced the returned set.
+        "provider_total_results": adzuna_count,
+        # When filters were applied but produced no filtered results, provide unfiltered count if available
+        "filtered_total_results": filtered_total,
+        "unfiltered_total_results": unfiltered_total,
+        "filter_applied_but_no_results": filter_applied_but_no_results,
+        "count": len(results_to_return),
         "persisted": len(job_ids),
         "job_ids": job_ids,
-        "results": results
+        "results": results_to_return,
     })
 
 
