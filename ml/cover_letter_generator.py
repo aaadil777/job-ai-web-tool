@@ -1,5 +1,6 @@
 from textwrap import dedent
 from gemini_client import GeminiClient
+from typing import Mapping, Any
 
 DEFAULT_STYLE_GUIDE = """\
 - clear, professional tone
@@ -7,15 +8,18 @@ DEFAULT_STYLE_GUIDE = """\
 """
 
 def _build_prompt(
-    contacts: str | None = None,
-    sections: dict | None = None,
+    contacts: Mapping[str, Any] | None = None,
+    sections: Mapping[str, str]  | None = None,
     tone: str = "professional",
     job_title: str | None = None,
     company: str | None = None,
     extras: str | None = None,
     job_description: str | None = None,
     job_board: str | None = None,
-):
+) -> str:
+    contacts = contacts or {}
+    sections = sections or {}
+    
     name = contacts.get("name", "Candidate")
     skills = sections.get("skills","")
     projects = sections.get("projects", "")
@@ -86,5 +90,5 @@ class CoverLetterGenerator:
             job_description = job_description,
             job_board = job_board,
         )
-        system = "You are the one recruiter and hiring manager who wrote the job listing."
+        system = "You are a professional writer who writes clear, concise cover letters."
         return self.client.generate(prompt, system=system)
