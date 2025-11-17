@@ -34,6 +34,52 @@ async function handleResponse(res) {
   throw new Error(message);
 }
 
+// Small helper to canonicalize experience labels from the UI into tokens
+// so the backend/provider queries aren't over-constrained by display text.
+function canonicalizeExperience(exp) {
+  if (typeof exp !== 'string') return '';
+  const s = exp.trim().toLowerCase();
+  if (!s) return '';
+  const map = {
+    'entry': 'entry',
+    'entry-level': 'entry',
+    'entry level': 'entry',
+    'junior': 'entry',
+    'mid': 'mid',
+    'mid-level': 'mid',
+    'mid level': 'mid',
+    'senior': 'senior',
+    'senior-level': 'senior',
+    'senior level': 'senior',
+    'lead': 'senior',
+  };
+  return map[s] || s;
+}
+
+// Small helper to canonicalize job contract/type labels from the UI into
+// a predictable set the backend expects. Maps common display labels to
+// tokens we use server-side (e.g. 'Full-time' -> 'Full-time').
+function canonicalizeType(t) {
+  if (typeof t !== 'string') return '';
+  const s = t.trim().toLowerCase();
+  if (!s) return '';
+  const map = {
+    'full-time': 'Full-time',
+    'full time': 'Full-time',
+    'fulltime': 'Full-time',
+    'part-time': 'Part-time',
+    'part time': 'Part-time',
+    'parttime': 'Part-time',
+    'contract': 'Contract',
+    'temporary': 'Contract',
+    'intern': 'Internship',
+    'internship': 'Internship',
+    'remote': 'Remote',
+    'hybrid': 'Hybrid',
+  };
+  return map[s] || t;
+}
+
 // --------------------
 // Example API methods
 // --------------------
@@ -73,12 +119,14 @@ export async function searchJobs(options = {}) {
     ...(options.inputs ? { inputs: options.inputs } : {}),
     ...(options.query ? { query: options.query } : {}),
     ...(options.location ? { location: options.location } : {}),
-    page: options.page || 1,
-    resultsPerPage: options.resultsPerPage || 10,
+  page: options.page || 1,
+  // Enforce 30 results per page (server expects and backend will also enforce this)
+  resultsPerPage: 30,
     ...(options.salaryMin ? { salaryMin: options.salaryMin } : {}),
     ...(options.salaryMax ? { salaryMax: options.salaryMax } : {}),
-    ...(options.type ? { type: options.type } : {}),
-    ...(options.experience ? { experience: options.experience } : {}),
+  // Always include type and experience (server is authoritative). Fall back to empty strings so the backend receives explicit keys.
+  type: typeof options.type !== 'undefined' ? canonicalizeType(options.type) : '',
+  experience: typeof options.experience !== 'undefined' ? canonicalizeExperience(options.experience) : '',
   };
 
   const res = await fetch(`${API_BASE}/jobs/search`, {
@@ -105,23 +153,8 @@ export async function searchJobs(options = {}) {
       category: j.category,
       url: j.url,
       raw: j.raw || {},
-      // Prefer server-provided normalized type, fall back to raw heuristics
-      type: j.type || (() => {
-        const raw = j.raw || {}
-        const ct = (raw.contract_time || raw.contract_type || "" ).toString().toLowerCase()
-        if (ct.includes('full') || ct.includes('permanent')) return 'Full-time'
-        if (ct.includes('part')) return 'Part-time'
-        if (ct.includes('contract') || ct.includes('temporary')) return 'Contract'
-        if (ct.includes('intern')) return 'Internship'
-        if (ct.includes('remote')) return 'Remote'
-        // try to infer from title/description heuristics
-        const txt = ((j.title || '') + ' ' + (j.description || '') + ' ' + (raw.description || '')).toLowerCase()
-        if (txt.includes('remote')) return 'Remote'
-        if (txt.includes('part-time')) return 'Part-time'
-        if (txt.includes('contract')) return 'Contract'
-        if (txt.includes('intern')) return 'Internship'
-        return ''
-      })(),
+      // Prefer server-provided normalized type (backend provides `type`). Do not infer on frontend.
+      type: j.type || '',
       // Normalize experience to a simple returned value (lowercase from backend). The frontend will format/display it.
       experience: j.experience_level || j.experience || '',
     }))

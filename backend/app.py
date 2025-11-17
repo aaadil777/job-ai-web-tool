@@ -13,6 +13,7 @@ from pathlib import Path
 import mammoth
 import pdfplumber
 from io import BytesIO
+import html as _html
 
 from flask import Flask, request, jsonify
 from flask_cors import CORS
@@ -31,6 +32,9 @@ import google.generativeai as genai
 # -----------------------------
 load_dotenv()
 app = Flask(__name__)
+
+# Config: allow configuring how many characters of job description to return
+JOB_DESCRIPTION_MAX_CHARS = int(os.getenv("JOB_DESCRIPTION_MAX_CHARS", "2000"))
 
 # Log whether Adzuna creds are available (do not print the secrets)
 if os.getenv("ADZUNA_APP_ID") and os.getenv("ADZUNA_APP_KEY"):
@@ -479,8 +483,7 @@ def resume_get_latest_meta():
 @app.put("/api/resumes/<int:rid>")
 def resume_replace_existing(rid: int):
     """
-    Replace an existing resume row with a new uploaded file.
-    Accepts multipart 'file'. Updates resume_text + file_name and bumps created_at.
+    Replaces an existing resume with a new resume. Updates file info accordingly.
     """
     uid = _get_user_id()
     db, cursor = get_db()
@@ -683,195 +686,356 @@ def extract_experience_level_helper(text: str) -> str:
 
 
 def _normalize_contract_type(job_raw: dict, title: str, description: str) -> str:
-    """Normalize job type into friendly labels.
+    """FALL BACK heuristic to:
 
+    Normalize job type into friendly labels.
     Returns one of: 'Full-time', 'Part-time', 'Contract', 'Internship', 'Remote', ''
     """
+    # Ensure job_raw is a dict-like object
     if not isinstance(job_raw, dict):
         job_raw = {}
-    ct = (job_raw.get("contract_time") or job_raw.get("contract_type") or "").strip().lower()
-    if ct:
-        if "full" in ct or "permanent" in ct:
-            return "Full-time"
-        if "part" in ct:
-            return "Part-time"
-        if "contract" in ct or "temporary" in ct:
-            return "Contract"
-        if "intern" in ct:
-            return "Internship"
-        if "remote" in ct:
-            return "Remote"
-        if "hybrid" in ct:
-            return "Hybrid"
 
-    # fallback: look into title and description heuristics
-    txt = f"{title or ''} {description or ''}".lower()
-    if "remote" in txt:
-        return "Remote"
-    if "part-time" in txt or "part time" in txt:
+    # Combine structured contract fields with title/description for a single search space
+    parts: List[str] = []
+    for k in ("contract_time", "contract_type"):
+        v = job_raw.get(k)
+        if v:
+            parts.append(str(v))
+    parts.append(str(title or ""))
+    parts.append(str(description or ""))
+    txt = " ".join(parts).lower()
+
+    # Phrase-first patterns (use word boundaries to avoid accidental matches like 'part' in 'participants')
+    patterns = [
+        (r"\b(full[\s-]*time|fte|full\s+time|permanent)\b", "Full-time"),
+        (r"\b(part[\s-]*time)\b", "Part-time"),
+        (r"\b(contract|temporary)\b", "Contract"),
+        (r"\b(intern(ship)?|intern)\b", "Internship"),
+        (r"\bremote\b", "Remote"),
+        (r"\bhybrid\b", "Hybrid"),
+    ]
+
+    for pattern, label in patterns:
+        try:
+            if re.search(pattern, txt, re.IGNORECASE):
+                return label
+        except re.error:
+            # if a regex fails for any reason, skip and continue
+            continue
+
+    return ""
+
+
+def _canonicalize_type_input(s: str) -> str:
+    """Map various user-provided job type labels into canonical labels used by the API.
+
+    Returns values like: 'Full-time', 'Part-time', 'Contract', 'Internship', 'Remote', 'Hybrid', or ''
+    """
+    if not s:
+        return ""
+    s2 = s.strip().lower()
+    if re.search(r"full[\s_-]*time|^fulltime$|^full-time$|^fte|permanent", s2):
+        return "Full-time"
+    if re.search(r"part[\s_-]*time|^parttime$|^part-time$", s2):
         return "Part-time"
-    if "contract" in txt or "temporary" in txt:
+    if re.search(r"contract|temporary|temp|c2h|c2c|contract-to-hire|contract to hire", s2):
         return "Contract"
-    if "intern" in txt or "internship" in txt:
+    if re.search(r"intern(ship)?|^intern$", s2):
         return "Internship"
+    if re.search(r"\bremote\b", s2):
+        return "Remote"
+    if re.search(r"\bhybrid\b", s2):
+        return "Hybrid"
+    return s.strip().replace("_", " ").replace("-", " ").title()
 
+
+def _canonicalize_experience_input(s: str) -> str:
+    """Map various user-provided experience labels into canonical experience_level values.
+
+    Returns one of: 'entry', 'mid', 'senior', or '' (empty string for unknown).
+    """
+    if not s:
+        return ""
+    t = s.strip().lower()
+    if re.search(r"entry|intern|junior|fresher|new\s+grad|graduate", t):
+        return "entry"
+    if re.search(r"mid|associate|intermediate", t):
+        return "mid"
+    if re.search(r"senior|sr\.?|lead|principal|director|vp|manager", t):
+        return "senior"
     return ""
 
 
 # POST /api/jobs/search { "inputs": ["https://...", "data analyst chicago", ...] }
 @app.post("/api/jobs/search")
 def jobs_search():
+    ## Read search inputs
     data = request.get_json(force=True) or {}
-
-    # Read filters from frontend, supports both "query" and legacy "inputs"
-    query = (data.get("query") or (data.get("inputs") or [""])[0] or "").strip()
+    query = (data.get("query") or "").strip()
     location = (data.get("location") or "").strip()
+    # Optional filters (type and experience now provided by frontend)
+    job_type_filter = (data.get("type") or "").strip()
+    experience_filter = (data.get("experience") or "").strip()
+    page = int(data.get("page", 1))
+    # Enforce a single allowed page size for Adzuna results: 30 per user requirement
+    # Ignore any client-provided value and always request 30 results per page
+    results_per_page = 30
+    salary_min = data.get("salaryMin")
+    salary_max = data.get("salaryMax")
 
-    # pagination
-    try:
-        page = int(data.get("page", 1) or 1)
-    except Exception:
-        page = 1
-    try:
-        results_per_page = int(
-            data.get("resultsPerPage", data.get("results_per_page", 10)) or 10
-        )
-    except Exception:
-        results_per_page = 10
-
-    # salary filters
-    try:
-        salary_min = int(data.get("salaryMin", 0) or 0)
-    except Exception:
-        salary_min = 0
-    try:
-        salary_max = int(data.get("salaryMax", 999999) or 999999)
-    except Exception:
-        salary_max = 999999
-
-    job_type = (data.get("type") or "").strip()
-    experience = (data.get("exp") or data.get("experience") or "").strip()
-
-    if not isinstance(query, str) or not query:
+    if not query:
         return bad("Provide 'query' as a non-empty string")
 
-    # Read Adzuna credentials from environment
+    ## Load Adzuna credentials
     app_id = os.getenv("ADZUNA_APP_ID")
     app_key = os.getenv("ADZUNA_APP_KEY")
     country = os.getenv("ADZUNA_COUNTRY", "us")
 
     if not app_id or not app_key:
-        return bad(
-            "Adzuna API credentials not configured on server. "
-            "Set ADZUNA_APP_ID and ADZUNA_APP_KEY."
-        )
+        return bad("Missing Adzuna credentials")
 
+    ## Build Adzuna request
     url = f"https://api.adzuna.com/v1/api/jobs/{country}/search/{page}"
+
+    # Build 'what' by appending textual qualifiers so Adzuna performs a best-effort filtered search.
+    # NOTE: Do NOT append the client's `type` filter here — Appending literal labels
+    # like "Full-time" to Adzuna's free-text query often over-constrains results and
+    # returns zero matches. We perform deterministic server-side post-filtering on
+    # our normalized `type` instead. Only append `experience` as a textual qualifier.
+    # Canonicalize experience before appending to avoid over-constraining the provider
+    # (send 'entry'|'mid'|'senior' tokens rather than display labels like 'Entry').
+    qualifiers = []
+    canon_exp = _canonicalize_experience_input(experience_filter)
+    if canon_exp:
+        qualifiers.append(canon_exp)
+
+    what_query = " ".join([query] + qualifiers).strip()
+
     params = {
         "app_id": app_id,
         "app_key": app_key,
         "results_per_page": results_per_page,
-        "what": query,
+        "what": what_query,
         "where": location,
-        "content-type": "application/json",
     }
-
-    # Apply salary filters only when provided
-    if salary_min and salary_min > 0:
+    if salary_min:
         params["salary_min"] = salary_min
-    if salary_max and salary_max < 999999:
+    if salary_max:
         params["salary_max"] = salary_max
 
     try:
-        res = requests.get(url, params=params, timeout=8)
+        res = requests.get(url, params=params, timeout=10)
         res.raise_for_status()
-        adzuna_data = res.json()
+        data = res.json()
     except Exception as e:
         app.logger.exception(f"Adzuna API error: {e}")
-        return bad("Failed to fetch jobs from Adzuna API")
+        return bad("Failed to fetch jobs from Adzuna")
 
-    # Convert Adzuna data into your frontend format and extract skills for later recommend
-    results = []
-    try:
-        total = int(adzuna_data.get("count") or 0)
-    except Exception:
-        total = 0
+    ## Database connection
+    db, cursor = get_db()
+    results, job_ids = [], []
 
-    for job in adzuna_data.get("results", []):
-        jid = MEM["next_job_id"]
-        MEM["next_job_id"] += 1
+    ## Iterate over each job result
+    for job in data.get("results", []):
+        title = job.get("title")
+        company = job.get("company", {}).get("display_name")
+        location_name = job.get("location", {}).get("display_name")
+        url_job = job.get("redirect_url")
+        raw_description = job.get("description", "") or ""
+        # Unescape HTML entities then strip tags
+        unescaped_description = _html.unescape(raw_description)
+        description = re.sub(r"<[^>]+>", "", unescaped_description)
+        job_salary_min = job.get("salary_min")
+        job_salary_max = job.get("salary_max")
+        category = job.get("category", {}).get("label", "")
+        source = "api"
 
-        raw_desc = job.get("description", "") or ""
-        desc = re.sub(r"<[^>]+>", "", raw_desc)
+        # Infer experience level from title+description
+        exp_text = f"{title or ''} {description or ''}"
+        experience_level = extract_experience_level_helper(exp_text)
 
-        skills = _extract_resume_skills(desc)
-
-        # normalize salary fields to ints or None
-        def _to_int_or_none(v):
-            if v is None:
-                return None
+        ## UPSERT (insert or update existing)
+        if db:
             try:
-                return int(float(v))
-            except Exception:
-                s = re.sub(r"[^0-9.-]", "", str(v) or "")
-                try:
-                    return int(float(s))
-                except Exception:
-                    return None
+                cursor.execute(
+                    '''
+                    INSERT INTO jobs (title, company_name, industry, description, location, salary_range, source, url)
+                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
+                    ON DUPLICATE KEY UPDATE
+                        description = VALUES(description),
+                        salary_range = VALUES(salary_range),
+                        posted_at = CURRENT_TIMESTAMP
+                    ''',
+                    (title, company, category, description, location_name, f"{salary_min}-{salary_max}", source, url_job)
+                )
+                cursor.execute("SELECT job_id FROM jobs WHERE title=%s AND company_name=%s AND location=%s AND url=%s",
+                               (title, company, location_name, url_job))
+                job_id = cursor.fetchone()["job_id"]
+                job_ids.append(job_id)
+            except Exception as e:
+                app.logger.warning(f"Job UPSERT failed: {e}")
 
-        s_min = _to_int_or_none(job.get("salary_min"))
-        s_max = _to_int_or_none(job.get("salary_max"))
+        # Normalize contract/type and include raw fields so clients can rely on a consistent `type` value
+        # Prefer Adzuna's structured contract fields when present. Only fall back to
+        # our heuristic `_normalize_contract_type` when Adzuna provides no useful value.
+        adz_contract_time = job.get("contract_time")
+        adz_contract_type = job.get("contract_type")
+        adz_type_raw = None
+        for k in ("type", "employment_type"):
+            v = job.get(k)
+            if v:
+                adz_type_raw = str(v).strip()
+                break
 
-        exp_level = extract_experience_level_helper(
-            f"{job.get('title', '')} {desc}"
-        )
+        # Map common Adzuna contract_time values to our labels
+        if adz_contract_time:
+            act = str(adz_contract_time).lower()
+            if act in {"full_time", "full-time", "full time", "permanent", "fte"}:
+                job_type = "Full-time"
+            elif act in {"part_time", "part-time", "part time"}:
+                job_type = "Part-time"
+            elif act in {"contract", "temporary", "temp"}:
+                job_type = "Contract"
+            elif act in {"internship", "intern"}:
+                job_type = "Internship"
+            else:
+                # use fallback normalization on the raw value
+                job_type = _normalize_contract_type(job, title, description)
+        elif adz_contract_type:
+            # contract_type can be values like 'permanent' or 'contract'
+            act = str(adz_contract_type).lower()
+            if act in {"permanent", "permanent contract", "permanent-hire"}:
+                job_type = "Full-time"
+            elif act in {"contract", "temporary", "temp"}:
+                job_type = "Contract"
+            else:
+                job_type = _normalize_contract_type(job, title, description)
+        elif adz_type_raw:
+            # Map textual type/employment_type values
+            s = adz_type_raw.lower()
+            if re.search(r"(full[\s_-]*time|fte|permanent|full time|fulltime)", s):
+                job_type = "Full-time"
+            elif re.search(r"(part[\s_-]*time|part time|parttime)", s):
+                job_type = "Part-time"
+            elif re.search(r"(contract|temporary|temp|c2h|c2c|contract-to-hire|contract to hire)", s):
+                job_type = "Contract"
+            elif re.search(r"(intern(ship)?|intern)", s):
+                job_type = "Internship"
+            elif re.search(r"\bremote\b", s):
+                job_type = "Remote"
+            elif re.search(r"\bhybrid\b", s):
+                job_type = "Hybrid"
+            else:
+                job_type = str(adz_type_raw).replace("_", " ").replace("-", " ").title()
+        else:
+            # No Adzuna-provided type info — run our heuristic on title/description
+            job_type = _normalize_contract_type(job, title, description)
 
-        external_id = job.get("id") or job.get("ad_id") or job.get("redirect_url")
-
-        normalized_type = _normalize_contract_type(job, job.get("title", ""), desc)
-
-        job_data = {
-            "job_id": jid,
-            "external_id": external_id,
-            "title": job.get("title"),
-            "company": job.get("company", {}).get("display_name", "Unknown"),
-            "location": job.get("location", {}).get("display_name", ""),
-            "url": job.get("redirect_url"),
-            "description": desc[:300],
-            "salary_min": s_min,
-            "salary_max": s_max,
-            # convenience camelCase aliases for some frontends that expect them
-            "salaryMin": s_min,
-            "salaryMax": s_max,
-            # provide a default matchScore so the UI has a consistent field to show
-            "matchScore": 0,
-            "category": job.get("category", {}).get("label", ""),
-            "created": job.get("created"),
-            "skills": skills,
-            "experience_level": exp_level,
-            "type": normalized_type,
+        ## Return clean job JSON
+        results.append({
+            "title": title,
+            "company": company,
+            "location": location_name,
+            "url": url_job,
+            "description": (description or "")[:JOB_DESCRIPTION_MAX_CHARS],
+            # Full cleaned description (not truncated). Frontend can show this in a modal/detail view.
+            "full_description": (description or ""),
+            "salary_min": job_salary_min,
+            "salary_max": job_salary_max,
+            "category": category,
+            "type": job_type,
+            # Provide both keys so frontend can consume either one
+            "experience": experience_level,
+            "experience_level": experience_level,
             "raw": job,
-        }
+        })
 
-        # Local filtering for job_type
-        if job_type:
-            raw_type = (job.get("contract_time") or job.get("contract_type") or "")
-            if raw_type and job_type.lower() not in raw_type.lower():
-                continue
 
-        MEM["jobs"][jid] = job_data
-        results.append(job_data)
+    # Deterministic post-filtering: apply server-side filters for type and
+    # experience so the returned result set strictly matches requested filters.
+    # This operates on our normalized values (the `type` field and
+    # `experience_level` field we set above).
+    post_filtered_results = list(results)
+    want_label = _canonicalize_type_input(job_type_filter)
+    want_exp = _canonicalize_experience_input(experience_filter)
 
-    resp = {
-        "results": results,
-        "total_results": total,
-        "totalResults": total,
+    # If a type was requested, keep only jobs with the normalized type
+    if want_label:
+        post_filtered_results = [r for r in post_filtered_results if (r.get("type") or "") == want_label]
+
+    # If an experience was requested, keep only jobs with matching experience_level
+    if want_exp:
+        post_filtered_results = [r for r in post_filtered_results if (r.get("experience_level") or "").lower() == want_exp]
+
+    filtered_total = len(post_filtered_results)
+
+    # If the client requested qualifiers (type/experience) and Adzuna returned zero
+    # results for that qualified query, do a best-effort fallback: re-query without
+    # the qualifiers to obtain an unfiltered count so the UI can show an alternative.
+    unfiltered_total = None
+    filter_applied_but_no_results = False
+    if (job_type_filter or experience_filter) and (filtered_total == 0):
+        try:
+            # Build params without qualifiers (just the base query)
+            params_no_qual = params.copy()
+            params_no_qual["what"] = query
+            res2 = requests.get(url, params=params_no_qual, timeout=10)
+            res2.raise_for_status()
+            data2 = res2.json()
+            unfiltered_total = data2.get("count", 0)
+            filter_applied_but_no_results = True if (unfiltered_total and unfiltered_total > 0) else False
+        except Exception as e:
+            app.logger.info(f"Fallback unfiltered Adzuna query failed: {e}")
+            unfiltered_total = None
+
+    # Adzuna's provider count for the original query we issued (best-effort)
+    adzuna_count = data.get("count", len(results)) if isinstance(data, dict) else len(results)
+
+    # Decide what to report as the authoritative total_results:
+    # - If the client did not request any filters (type/experience), prefer
+    #   Adzuna's provider count (adzuna_count) since it reflects the total
+    #   upstream matching jobs across pages.
+    # - If the client requested filters and we applied deterministic
+    #   post-filtering, report the filtered_total (which currently reflects
+    #   matches within the fetched page). Computing the exact filtered total
+    #   across all pages would require additional provider queries and is
+    #   intentionally left out for performance; instead we also include
+    #   `provider_total_results` for transparency.
+    if not (job_type_filter or experience_filter):
+        total_results = int(adzuna_count or 0)
+    else:
+        total_results = filtered_total
+
+    total_pages = (total_results + results_per_page - 1) // results_per_page
+
+    # If the client requested a job type, return the post-filtered results
+    # (deterministic). Otherwise, return the raw results from Adzuna.
+    results_to_return = post_filtered_results if want_label or want_exp else results
+
+    ## Return API response
+    return ok({
+        "query": query,
+        "location": location,
+        "type": job_type_filter,
+        "experience": experience_filter,
         "page": page,
         "results_per_page": results_per_page,
-        "resultsPerPage": results_per_page,
-    }
-
-    return ok(resp)
+        "salary_min": salary_min,
+        "salary_max": salary_max,
+        "total_results": total_results,
+        "total_pages": total_pages,
+        # Surface the Adzuna provider's raw count so the UI can explain when
+        # our deterministic post-filtering reduced the returned set.
+        "provider_total_results": adzuna_count,
+        # When filters were applied but produced no filtered results, provide unfiltered count if available
+        "filtered_total_results": filtered_total,
+        "unfiltered_total_results": unfiltered_total,
+        "filter_applied_but_no_results": filter_applied_but_no_results,
+        "count": len(results_to_return),
+        "persisted": len(job_ids),
+        "job_ids": job_ids,
+        "results": results_to_return,
+    })
 
 
 # POST /api/recommend { "resume_id": int, "job_ids": [int] }
@@ -999,6 +1163,111 @@ def chat():
 
     return ok({"reply": reply})
 
+## User Profile Endpoints (GET / PUT)
+def _get_current_user_id():
+    """Helper to extract the current user ID from headers (temporary mock auth)."""
+    uid = request.headers.get("X-User-Id")
+    if not uid:
+        return None
+    try:
+        return int(uid)
+    except ValueError:
+        return None
+
+
+@app.get("/api/users/me")
+def get_user_profile():
+    """Fetch current user's profile data."""
+    user_id = _get_current_user_id()
+    if not user_id:
+        return bad("Unauthorized: missing X-User-Id header", 401)
+
+    db, cursor = get_db()
+    if not db:
+        return bad("Database not configured", 500)
+
+    try:
+        cursor.execute("""
+            SELECT 
+                u.id AS user_id,
+                u.full_name,
+                u.email,
+                u.role,
+                p.location,
+                p.phone,
+                p.experience_level,
+                p.job_preferences,
+                p.desired_salary
+            FROM users u
+            LEFT JOIN user_profiles p ON u.id = p.user_id
+            WHERE u.id = %s
+        """, (user_id,))
+        row = cursor.fetchone()
+        if not row:
+            return bad("User not found", 404)
+
+        # Convert JSON string to dict
+        if isinstance(row.get("job_preferences"), str):
+            try:
+                row["job_preferences"] = json.loads(row["job_preferences"])
+            except Exception:
+                row["job_preferences"] = {}
+
+        return ok(row)
+    except Exception as e:
+        app.logger.exception(e)
+        return bad("Error fetching user profile", 500)
+
+
+@app.put("/api/users/me/profile")
+def update_user_profile():
+    """Update the current user's profile fields."""
+    user_id = _get_current_user_id()
+    if not user_id:
+        return bad("Unauthorized: missing X-User-Id header", 401)
+
+    data = request.get_json(force=True) or {}
+    full_name = data.get("full_name")
+    email = data.get("email")
+    role = data.get("role")
+    location = data.get("location")
+    phone = data.get("phone")
+    job_preferences = data.get("job_preferences") or {}
+    desired_salary = data.get("desired_salary")
+
+    db, cursor = get_db()
+    if not db:
+        return bad("Database not configured", 500)
+
+    try:
+        # Update base user info
+        if any([full_name, email, role]):
+            cursor.execute("""
+                UPDATE users
+                SET 
+                    full_name = COALESCE(%s, full_name),
+                    email = COALESCE(%s, email),
+                    role = COALESCE(%s, role)
+                WHERE id = %s
+            """, (full_name, email, role, user_id))
+
+        # Update or insert profile info
+        cursor.execute("""
+            INSERT INTO user_profiles (user_id, location, phone, job_preferences, desired_salary)
+            VALUES (%s, %s, %s, %s, %s)
+            ON DUPLICATE KEY UPDATE
+                location = VALUES(location),
+                phone = VALUES(phone),
+                job_preferences = VALUES(job_preferences),
+                desired_salary = VALUES(desired_salary)
+        """, (user_id, location, phone, json.dumps(job_preferences), desired_salary))
+
+        db.commit()
+        return ok({"message": "Profile updated successfully"})
+    except Exception as e:
+        db.rollback()
+        app.logger.exception(e)
+        return bad("Error updating profile", 500)
 
 # -----------------------------
 # Main
