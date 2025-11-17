@@ -15,7 +15,8 @@ export default function MatchedAI() {
   const [salaryMin, setSalaryMin] = useState(30000)
   const [salaryMax, setSalaryMax] = useState(200000)
   const [page, setPage] = useState(1)
-  const [resultsPerPage, setResultsPerPage] = useState(10)
+  // Backend enforces page size; keep a local constant but don't expose it in the UI
+  const RESULTS_PER_PAGE = 30
   const [totalResults, setTotalResults] = useState(0)
   const [coverModalOpen, setCoverModalOpen] = useState(false)
   const [coverModalLoading, setCoverModalLoading] = useState(false)
@@ -23,6 +24,8 @@ export default function MatchedAI() {
   const [coverModalContent, setCoverModalContent] = useState('')
   const [coverModalBullets, setCoverModalBullets] = useState([])
   const [selectedJob, setSelectedJob] = useState(null)
+  const [filterAppliedButNoResults, setFilterAppliedButNoResults] = useState(false)
+  const [unfilteredTotalResults, setUnfilteredTotalResults] = useState(null)
 
   const formatSalary = (val) => `$${Math.round((val || 0) / 1000)}k`
 
@@ -49,7 +52,9 @@ export default function MatchedAI() {
       query: opts.query ?? searchQuery ?? 'data analyst',
       location: opts.location ?? location ?? '',
       page: opts.page ?? page,
-      resultsPerPage: opts.resultsPerPage ?? resultsPerPage,
+      // Keep sending an explicit page size to the API for clarity, but this is not
+      // controlled by the user in the UI anymore.
+      resultsPerPage: opts.resultsPerPage ?? RESULTS_PER_PAGE,
       salaryMin: opts.salaryMin ?? salaryMin,
       salaryMax: opts.salaryMax ?? salaryMax,
       type: opts.type ?? type,
@@ -71,8 +76,11 @@ export default function MatchedAI() {
 
       if (data) {
         setPage(Number(data.page || 1))
-        setResultsPerPage(Number(data.resultsPerPage || resultsPerPage))
         setTotalResults(Number(data.totalResults || 0))
+        // Backend may include fallback info in _raw. Preserve that for UI hints.
+        const raw = data._raw || {}
+        setFilterAppliedButNoResults(Boolean(raw.filter_applied_but_no_results))
+        setUnfilteredTotalResults(raw.unfiltered_total_results || null)
       }
 
       const rid = parseInt(localStorage.getItem('resume_id') || '', 10)
@@ -94,9 +102,9 @@ export default function MatchedAI() {
       console.error('Failed to fetch jobs', err)
       setJobs([])
     }
-  }, [searchQuery, location, salaryMin, salaryMax, type, experience, page, resultsPerPage])
+  }, [searchQuery, location, salaryMin, salaryMax, type, experience, page])
 
-  useEffect(() => { fetchJobs({ query: searchQuery, page, resultsPerPage }) }, [fetchJobs, page, resultsPerPage, searchQuery])
+  useEffect(() => { fetchJobs({ query: searchQuery, page }) }, [fetchJobs, page, searchQuery])
 
   // Generate cover letter for a selected job and show modal
   const handleGenerateCoverLetter = async (job) => {
@@ -126,19 +134,21 @@ export default function MatchedAI() {
       const jMin = j.salaryMin || 0
       const jMax = j.salaryMax || 0
 
-      const jobTypeStr = String(j.type || '')
-      const passType = !type || jobTypeStr === '' || jobTypeStr.toLowerCase().includes(type.toLowerCase())
-
-      const passSalary = (jMax >= salaryMin) && (jMin <= salaryMax)
+  const passSalary = (jMax >= salaryMin) && (jMin <= salaryMax)
 
       const jobExp = String(j.experience || '')
       const passExp = !experience || jobExp.toLowerCase() === experience.toLowerCase() || jobExp.toLowerCase() === 'unknown' || jobExp === ''
 
-      const passLoc = !location || (j.location || '').toLowerCase().includes(location.toLowerCase())
+      // Location filtering is handled server-side via the Adzuna `where` param.
+      // Adzuna's returned `location.display_name` may contain neighborhoods or
+      // county names rather than the literal city (e.g. "Tarrytown, Travis County").
+      // To avoid accidentally hiding valid server-returned matches, do not
+      // re-filter by location in the client — assume the backend already applied it.
+      const passLoc = true
 
-      return passType && passSalary && passExp && passLoc
+      return passSalary && passExp && passLoc
     })
-  }, [jobs, type, experience, salaryMin, salaryMax, location])
+  }, [jobs, experience, salaryMin, salaryMax, location])
 
   return (
     <div>
@@ -176,7 +186,7 @@ v-4.875c0-.621.504-1.125 1.125-1.125h2.25c.621 0 1.125.504 1.125 1.125V21h4.125c
           <p className="text-muted-foreground">Jobs matched to your resume and preferences.</p>
           <p className="text-muted-foreground">Use filters to help narrow results.</p>
 
-          <form id="filtersForm" className="filters" onSubmit={(e) => { e.preventDefault(); setPage(1); fetchJobs({ query: searchQuery, page: 1 }); }} style={{
+          <form id="filtersForm" className="filters" onSubmit={(e) => { e.preventDefault(); setPage(1); fetchJobs({ query: searchQuery, location, page: 1, salaryMin, salaryMax, type, experience }); }} style={{
             width: '100vw',
             maxWidth: '100%',
             margin: '18px 0',
@@ -215,7 +225,7 @@ v-4.875c0-.621.504-1.125 1.125-1.125h2.25c.621 0 1.125.504 1.125 1.125V21h4.125c
               <option value="Austin, TX" />
             </datalist>
 
-            <select name="type" className="filter-input" style={{ minWidth: '150px' }} value={type} onChange={(e) => setType(e.target.value)}>
+            <select name="type" className="filter-input" style={{ minWidth: '150px' }} value={type} onChange={(e) => { const v = e.target.value; setType(v); setPage(1); fetchJobs({ query: searchQuery, location, page: 1, resultsPerPage, salaryMin, salaryMax, type: v, experience }); }}>
               <option value="">Any type</option>
               <option>Full-time</option>
               <option>Part-time</option>
@@ -225,7 +235,7 @@ v-4.875c0-.621.504-1.125 1.125-1.125h2.25c.621 0 1.125.504 1.125 1.125V21h4.125c
               <option>Internship</option>
             </select>
 
-            <select name="exp" className="filter-input" style={{ minWidth: '140px' }} value={experience} onChange={(e) => setExp(e.target.value)}>
+            <select name="exp" className="filter-input" style={{ minWidth: '140px' }} value={experience} onChange={(e) => { const v = e.target.value; setExp(v); setPage(1); fetchJobs({ query: searchQuery, location, page: 1, resultsPerPage, salaryMin, salaryMax, type, experience: v }); }}>
               <option value="">Experience</option>
               <option>Entry</option>
               <option>Mid</option>
@@ -305,12 +315,24 @@ v-4.875c0-.621.504-1.125 1.125-1.125h2.25c.621 0 1.125.504 1.125 1.125V21h4.125c
             }}>
               Apply Filters
             </button>
-            <select value={resultsPerPage} onChange={(e) => { const v = Number(e.target.value); setResultsPerPage(v); setPage(1); fetchJobs({ page:1, resultsPerPage: v }) }} className="filter-input" style={{ minWidth: '110px' }}>
-              <option value={10}>10 / page</option>
-              <option value={20}>20 / page</option>
-              <option value={30}>30 / page</option>
-            </select>
+            {/* results-per-page control removed from UI (backend controls page size) */}
           </form>
+
+          {/* Banner when backend indicates filters produced no filtered results */}
+          {filterAppliedButNoResults ? (
+            <div style={{ maxWidth: '820px', margin: '8px auto', padding: 12, borderRadius: 8, background: '#fff3cd', color: '#664d03', display: 'flex', gap: 12, alignItems: 'center', justifyContent: 'space-between' }}>
+              <div>
+                <strong>No exact matches for your filters.</strong>
+                <div style={{ fontSize: 13, marginTop: 4 }}>
+                  We couldn't find jobs that matched your filters exactly. There {unfilteredTotalResults === 1 ? 'is' : 'are'} {unfilteredTotalResults ?? 'some'} job{(unfilteredTotalResults === 1 ? '' : 's')} without the selected filters.
+                </div>
+              </div>
+              <div style={{ display: 'flex', gap: 8 }}>
+                <button onClick={() => { setType(''); setExp(''); setPage(1); setFilterAppliedButNoResults(false); fetchJobs({ query: searchQuery, location, page: 1, resultsPerPage, salaryMin, salaryMax, type: '', experience: '' }); }} style={{ padding: '8px 10px', borderRadius: 8, border: '1px solid #c69500', background: '#fff', cursor: 'pointer' }}>Remove Type & Experience Filters</button>
+                <button onClick={() => { setType(''); setExp(''); setPage(1); setFilterAppliedButNoResults(false); fetchJobs({ query: searchQuery, location, page: 1, resultsPerPage, salaryMin, salaryMax, type: '', experience: '' }); }} style={{ padding: '8px 10px', borderRadius: 8, border: '1px solid #c69500', background: '#c69500', color: '#fff', cursor: 'pointer' }}>Show {unfilteredTotalResults ?? 'All'} Jobs</button>
+              </div>
+            </div>
+          ) : null}
 
           <section id="jobsList" className="jobs" style={{
             width: '100%',
@@ -327,22 +349,23 @@ v-4.875c0-.621.504-1.125 1.125-1.125h2.25c.621 0 1.125.504 1.125 1.125V21h4.125c
           {/* Pagination footer: show server total and filtered count when client-side filters are active */}
           {(() => {
             const filteredCount = filterJobs.length || 0
-            const clientFilterActive = Boolean(type || experience || location || salaryMin !== 30000 || salaryMax !== 200000)
-            const pagesFromServer = totalResults ? Math.max(1, Math.ceil((totalResults || 0) / resultsPerPage)) : Math.max(1, Math.ceil((jobs.length || 0) / resultsPerPage))
-            const pagesFromFiltered = Math.max(1, Math.ceil(filteredCount / resultsPerPage))
-            const totalPages = clientFilterActive ? pagesFromFiltered : pagesFromServer
+            // Prefer server-provided totalResults when available; fall back to client-side filtered count
+            const hasServerTotal = Boolean(totalResults && Number(totalResults) > 0)
+      const pagesFromServer = Math.max(1, Math.ceil((hasServerTotal ? Number(totalResults) : (jobs.length || 0)) / RESULTS_PER_PAGE))
+      const pagesFromFiltered = Math.max(1, Math.ceil(filteredCount / RESULTS_PER_PAGE))
+            const totalPages = hasServerTotal ? pagesFromServer : pagesFromFiltered
 
             const prevDisabled = page <= 1
-            const nextDisabled = clientFilterActive ? (page >= totalPages) : (totalResults ? (page * resultsPerPage) >= totalResults : ((jobs.length || 0) < resultsPerPage))
+            const nextDisabled = page >= totalPages
 
             return (
               <div style={{ display: 'flex', justifyContent: 'center', alignItems: 'center', gap: 12, marginTop: 12 }}>
-                <button onClick={() => { if (!prevDisabled) { const np = page - 1; setPage(np); fetchJobs({ page: np }); } }} disabled={prevDisabled}>Prev</button>
+                <button onClick={() => { if (!prevDisabled) { const np = page - 1; setPage(np); fetchJobs({ page: np, query: searchQuery, location, salaryMin, salaryMax, type, experience }); } }} disabled={prevDisabled}>Prev</button>
                 <div style={{ fontSize: 14, color: 'var(--muted)' }}>
                   Page {page} of {totalPages}
-                  {clientFilterActive ? ` — showing ${filteredCount} result${filteredCount === 1 ? '' : 's'} (server total: ${totalResults || 0})` : (totalResults ? ` — ${totalResults} total results` : '')}
+                  {hasServerTotal ? ` — ${totalResults} total results` : ` — showing ${filteredCount} result${filteredCount === 1 ? '' : 's'}`}
                 </div>
-                <button onClick={() => { if (!nextDisabled) { const np = page + 1; setPage(np); fetchJobs({ page: np }); } }} disabled={nextDisabled}>Next</button>
+                <button onClick={() => { if (!nextDisabled) { const np = page + 1; setPage(np); fetchJobs({ page: np, query: searchQuery, location, salaryMin, salaryMax, type, experience }); } }} disabled={nextDisabled}>Next</button>
               </div>
             )
           })()}

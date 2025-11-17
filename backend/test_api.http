@@ -16,3 +16,36 @@ Content-Type: application/json
   "job_title": "Operations Manager",
   "skills": ["leadership", "data analysis"]
 }
+
+### Test 3: Adzuna Job Search
+POST http://127.0.0.1:5000/api/jobs/search
+Content-Type: application/json
+
+{
+  "query": "data analyst",
+  "location": "New York",
+  "resultsPerPage": 5,
+  "salaryMin": 60000,
+  "salaryMax": 130000
+}
+
+### Test 4 Get User Profile
+GET http://localhost:5000/api/users/me
+X-User-Id: 1
+
+### Test 5: Update User Profile
+PUT http://localhost:5000/api/users/me/profile
+Content-Type: application/json
+X-User-Id: 1
+
+{
+  "full_name": "Napoleon Foatobang",
+  "email": "napoleon@example.com",
+  "location": "Tulsa, OK",
+  "phone": "+1-918-555-1290",
+  "job_preferences": {
+    "locations": ["Tulsa", "Remote"],
+    "type": "Full-time"
+  },
+  "desired_salary": 1234
+}
