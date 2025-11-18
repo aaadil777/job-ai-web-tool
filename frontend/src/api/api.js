@@ -122,8 +122,8 @@ export async function searchJobs(options = {}) {
   page: options.page || 1,
   // Enforce 30 results per page (server expects and backend will also enforce this)
   resultsPerPage: 30,
-    ...(options.salaryMin ? { salaryMin: options.salaryMin } : {}),
-    ...(options.salaryMax ? { salaryMax: options.salaryMax } : {}),
+  ...(Number.isFinite(options.salaryMin) ? { salaryMin: options.salaryMin } : {}),
+  ...(Number.isFinite(options.salaryMax) ? { salaryMax: options.salaryMax } : {}),
   // Always include type and experience (server is authoritative). Fall back to empty strings so the backend receives explicit keys.
   type: typeof options.type !== 'undefined' ? canonicalizeType(options.type) : '',
   experience: typeof options.experience !== 'undefined' ? canonicalizeExperience(options.experience) : '',
@@ -147,9 +147,9 @@ export async function searchJobs(options = {}) {
       company: j.company,
       location: j.location,
       description: j.description,
-      skills: j.skills || [],
-      salaryMin: j.salary_min || 0,
-      salaryMax: j.salary_max || 0,
+      skills: Array.isArray(j.skills) ? j.skills : (j.skills || []),
+      salaryMin: Number.isFinite(j.salary_min) ? j.salary_min : (Number.isFinite(j.salaryMin) ? j.salaryMin : null),
+      salaryMax: Number.isFinite(j.salary_max) ? j.salary_max : (Number.isFinite(j.salaryMax) ? j.salaryMax : null),
       category: j.category,
       url: j.url,
       raw: j.raw || {},
@@ -161,7 +161,7 @@ export async function searchJobs(options = {}) {
 
     // Normalize paging metadata to camelCase for consumers
     const respPage = Number(data.page || 1)
-    const respRpp = Number(data.resultsPerPage ?? data.results_per_page ?? 10)
+    const respRpp = Number(data.resultsPerPage ?? data.results_per_page ?? 30);
     const respTotal = Number(data.totalResults ?? data.total_results ?? 0)
 
     return {
@@ -226,8 +226,8 @@ export async function matchResumeToJob(payload = {}) {
 
 // Generate a cover letter for a resume/job pair. Returns { cover_letter, resume_bullets }
 // payload: same shape as matchResumeToJob
-export async function generateCoverLetter(payload = {}) {
-  const res = await fetch(`${API_BASE}/generate-cover-letter`, {
+export async function generateCoverLetter(payload) {
+  const res = await fetch(`${API_BASE}/cover_letter`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(payload),
@@ -239,8 +239,9 @@ export async function generateCoverLetter(payload = {}) {
 
   return {
     cover_letter: data.cover_letter || data.coverLetter || data.cover || '',
-    resume_bullets: Array.isArray(data.resume_bullets) ? data.resume_bullets : (Array.isArray(data.resumeBullets) ? data.resumeBullets : (Array.isArray(data.resumeBullets) ? data.resumeBullets : [])),
-    // include raw data for debugging if callers need it
+    resume_bullets: Array.isArray(data.resume_bullets)
+      ? data.resume_bullets
+      : (Array.isArray(data.resumeBullets) ? data.resumeBullets : []),
     _raw: data,
   };
 }

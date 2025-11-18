@@ -1,6 +1,8 @@
 -- SQL schema and database setup
 
-CREATE DATABASE IF NOT EXISTS jobhunter_ai;
+CREATE DATABASE IF NOT EXISTS jobhunter_ai
+  DEFAULT CHARACTER SET utf8mb4
+  DEFAULT COLLATE utf8mb4_unicode_ci;
 USE jobhunter_ai;
 
 -- 1. USERS
@@ -11,20 +13,26 @@ CREATE TABLE IF NOT EXISTS users (
     password_hash VARCHAR(255) NOT NULL,
     role ENUM('jobseeker', 'recruiter', 'admin') DEFAULT 'jobseeker',
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-);
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+-- ** MOCK USER. REMOVE WHEN REAL AUTH USER IS CREATED **
+INSERT INTO users (id, full_name, email, password_hash, role)
+VALUES (1, 'Dev User', 'dev@example.com', 'dev-placeholder-hash', 'jobseeker');
 
 -- 2. USER PROFILES
 CREATE TABLE IF NOT EXISTS user_profiles (
-    profile_id INT AUTO_INCREMENT PRIMARY KEY,
-    user_id INT NOT NULL,
-    experience_level ENUM('entry', 'mid', 'senior', 'executive') DEFAULT 'entry',
+    user_id INT PRIMARY KEY,
+    experience_level ENUM('entry','mid','senior','executive') DEFAULT 'entry',
     bio TEXT,
     location VARCHAR(150),
     desired_industry VARCHAR(150),
     desired_salary DECIMAL(10,2),
+    phone VARCHAR(50),
+    job_preferences JSON,
     last_updated TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
-    FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
-);
+    CONSTRAINT fk_user_profiles_user
+        FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
 -- 3. USER SKILLS
 CREATE TABLE IF NOT EXISTS user_skills (
@@ -34,7 +42,7 @@ CREATE TABLE IF NOT EXISTS user_skills (
     proficiency ENUM('beginner','intermediate','advanced','expert') DEFAULT 'beginner',
     years_experience INT DEFAULT 0,
     FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
-);
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
 -- 4. EDUCATION
 CREATE TABLE IF NOT EXISTS education (
@@ -45,7 +53,7 @@ CREATE TABLE IF NOT EXISTS education (
     field_of_study VARCHAR(100),
     graduation_year YEAR,
     FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
-);
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
 -- 5. CERTIFICATIONS
 CREATE TABLE IF NOT EXISTS certifications (
@@ -56,22 +64,21 @@ CREATE TABLE IF NOT EXISTS certifications (
     year_obtained YEAR,
     expiration_date DATE,
     FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
-);
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
 -- 6. RESUMES
 CREATE TABLE IF NOT EXISTS resumes (
   id INT AUTO_INCREMENT PRIMARY KEY,
-  user_id INT NULL,                    -- **add later when authenticated user id is available**                              
+  user_id INT NULL,
   resume_text LONGTEXT NOT NULL,
   file_name VARCHAR(255) NULL,
   parsed_sections JSON NULL,
   parsed_contacts JSON NULL,
   created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
-  INDEX idx_resumes_user_created (user_id, created_at DESC),
+  INDEX idx_resumes_user_created (user_id, created_at),
   CONSTRAINT fk_resumes_user
     FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
-);
-
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
 -- 7. JOBS
 CREATE TABLE IF NOT EXISTS jobs (
@@ -82,10 +89,17 @@ CREATE TABLE IF NOT EXISTS jobs (
     description TEXT,
     location VARCHAR(100),
     requirements TEXT,
+    url VARCHAR(1024),
     salary_range VARCHAR(100),
-    source ENUM('internal','api') DEFAULT 'internal',
-    posted_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-);
+    source VARCHAR(16) DEFAULT 'internal',
+    posted_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        UNIQUE KEY uq_job_unique (
+			title(100),
+			company_name(100),
+			location(50),
+			url(255)
+        )
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
 -- 8. JOB RECOMMENDATIONS
 CREATE TABLE IF NOT EXISTS job_recommendations (
@@ -98,7 +112,7 @@ CREATE TABLE IF NOT EXISTS job_recommendations (
     recommended_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
     FOREIGN KEY (job_id) REFERENCES jobs(job_id) ON DELETE CASCADE
-);
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
 -- 9. SAVED JOBS
 CREATE TABLE IF NOT EXISTS saved_jobs (
@@ -107,29 +121,9 @@ CREATE TABLE IF NOT EXISTS saved_jobs (
     job_id INT NOT NULL,
     date_saved DATETIME DEFAULT CURRENT_TIMESTAMP,
     notes VARCHAR(255),
-
     CONSTRAINT fk_savedjobs_user
-        FOREIGN KEY (user_id)
-        REFERENCES users(id)
-        ON DELETE CASCADE,
-
+        FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
     CONSTRAINT fk_savedjobs_job
-        FOREIGN KEY (job_id)
-        REFERENCES jobs(job_id)
-        ON DELETE CASCADE
-);
-
--- Prevent users from saving the same job multiple times
-ALTER TABLE saved_jobs
-    ADD UNIQUE KEY uq_user_job (user_id, job_id);
-
--- 10. Ensure jobs table supports API persistence
--- Add URL and source columns if missing (for Adzuna/API jobs)
-ALTER TABLE jobs
-    ADD COLUMN IF NOT EXISTS url VARCHAR(255),
-    ADD COLUMN IF NOT EXISTS source ENUM('internal','api') DEFAULT 'internal';
-
--- Create a unique composite key to prevent duplicates
--- This allows UPSERT (ON DUPLICATE KEY UPDATE) in Flask
-ALTER TABLE jobs
-    ADD UNIQUE KEY uq_job_unique (title, company_name, location, url);
+        FOREIGN KEY (job_id) REFERENCES jobs(job_id) ON DELETE CASCADE,
+    UNIQUE KEY uq_user_job (user_id, job_id)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
