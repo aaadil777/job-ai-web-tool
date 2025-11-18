@@ -20,7 +20,9 @@ CREATE TABLE IF NOT EXISTS user_profiles (
     experience_level ENUM('entry', 'mid', 'senior', 'executive') DEFAULT 'entry',
     bio TEXT,
     location VARCHAR(150),
+    phone VARCHAR(50),
     desired_industry VARCHAR(150),
+    job_preferences JSON,
     desired_salary DECIMAL(10,2),
     last_updated TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
     FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
@@ -133,3 +135,18 @@ ALTER TABLE jobs
 -- This allows UPSERT (ON DUPLICATE KEY UPDATE) in Flask
 ALTER TABLE jobs
     ADD UNIQUE KEY uq_job_unique (title, company_name, location, url);
+
+-- 11. APPLIED JOBS
+CREATE TABLE IF NOT EXISTS applied_jobs (
+    applied_id INT AUTO_INCREMENT PRIMARY KEY,
+    user_id INT NOT NULL,
+    job_id INT NOT NULL,
+    applied_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+    status ENUM('applied') DEFAULT 'applied',
+
+    FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
+    FOREIGN KEY (job_id) REFERENCES jobs(job_id) ON DELETE CASCADE
+);
+
+ALTER TABLE applied_jobs
+    ADD UNIQUE KEY uq_applied_user_job (user_id, job_id);
