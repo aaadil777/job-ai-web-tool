@@ -1,14 +1,12 @@
 -- SQL schema and database setup
-
-CREATE DATABASE IF NOT EXISTS jobhunter_ai
-  DEFAULT CHARACTER SET utf8mb4
-  DEFAULT COLLATE utf8mb4_unicode_ci;
+CREATE DATABASE IF NOT EXISTS jobhunter_ai;
 USE jobhunter_ai;
 
 -- 1. USERS
 CREATE TABLE IF NOT EXISTS users (
     id INT AUTO_INCREMENT PRIMARY KEY,
     full_name VARCHAR(100) NOT NULL,
+    title VARCHAR(100),
     email VARCHAR(100) UNIQUE NOT NULL,
     password_hash VARCHAR(255) NOT NULL,
     role ENUM('jobseeker', 'recruiter', 'admin') DEFAULT 'jobseeker',
@@ -26,6 +24,8 @@ CREATE TABLE IF NOT EXISTS user_profiles (
     bio TEXT,
     location VARCHAR(150),
     desired_industry VARCHAR(150),
+    phone VARCHAR(50),
+    job_preferences JSON,
     desired_salary DECIMAL(10,2),
     phone VARCHAR(50),
     job_preferences JSON,
@@ -33,6 +33,24 @@ CREATE TABLE IF NOT EXISTS user_profiles (
     CONSTRAINT fk_user_profiles_user
         FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+    FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
+    CONSTRAINT uq_user_profiles_user UNIQUE (user_id)
+);
+
+DELIMITER $$
+CREATE TRIGGER trg_users_after_insert
+AFTER INSERT ON users
+FOR EACH ROW
+BEGIN
+  INSERT INTO user_profiles (user_id) VALUES (NEW.id);
+END$$
+DELIMITER ;
+
+-- ** TEMPORARY USER FOR TESTING, CAN REMOVE LATER WHEN AUTH USER IS CREATED **
+INSERT INTO users (id, full_name, title, email, password_hash)
+VALUES (1, 'Demo User', '—', 'demo@example.com', 'dev');
+
+UPDATE user_profiles SET phone='', location='', desired_salary=NULL WHERE user_id=1;
 
 -- 3. USER SKILLS
 CREATE TABLE IF NOT EXISTS user_skills (
@@ -75,10 +93,9 @@ CREATE TABLE IF NOT EXISTS resumes (
   parsed_sections JSON NULL,
   parsed_contacts JSON NULL,
   created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
-  INDEX idx_resumes_user_created (user_id, created_at),
-  CONSTRAINT fk_resumes_user
-    FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+  INDEX idx_resumes_user_created (user_id, created_at DESC),
+  CONSTRAINT fk_resumes_user FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+);
 
 -- 7. JOBS
 CREATE TABLE IF NOT EXISTS jobs (
@@ -89,17 +106,12 @@ CREATE TABLE IF NOT EXISTS jobs (
     description TEXT,
     location VARCHAR(100),
     requirements TEXT,
-    url VARCHAR(1024),
+    url VARCHAR(255),
     salary_range VARCHAR(100),
-    source VARCHAR(16) DEFAULT 'internal',
+    source ENUM('internal','api') DEFAULT 'internal',
     posted_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-        UNIQUE KEY uq_job_unique (
-			title(100),
-			company_name(100),
-			location(50),
-			url(255)
-        )
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+    UNIQUE KEY uq_job_unique (title, company_name, location, url)
+);
 
 -- 8. JOB RECOMMENDATIONS
 CREATE TABLE IF NOT EXISTS job_recommendations (
@@ -121,9 +133,7 @@ CREATE TABLE IF NOT EXISTS saved_jobs (
     job_id INT NOT NULL,
     date_saved DATETIME DEFAULT CURRENT_TIMESTAMP,
     notes VARCHAR(255),
-    CONSTRAINT fk_savedjobs_user
-        FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
-    CONSTRAINT fk_savedjobs_job
-        FOREIGN KEY (job_id) REFERENCES jobs(job_id) ON DELETE CASCADE,
+    CONSTRAINT fk_savedjobs_user FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
+    CONSTRAINT fk_savedjobs_job  FOREIGN KEY (job_id)  REFERENCES jobs(job_id) ON DELETE CASCADE,
     UNIQUE KEY uq_user_job (user_id, job_id)
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+);
