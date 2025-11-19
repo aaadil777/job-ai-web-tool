@@ -11,13 +11,16 @@ CREATE TABLE IF NOT EXISTS users (
     password_hash VARCHAR(255) NOT NULL,
     role ENUM('jobseeker', 'recruiter', 'admin') DEFAULT 'jobseeker',
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-);
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+-- ** MOCK USER. REMOVE WHEN REAL AUTH USER IS CREATED **
+INSERT INTO users (id, full_name, email, password_hash, role)
+VALUES (1, 'Dev User', 'dev@example.com', 'dev-placeholder-hash', 'jobseeker');
 
 -- 2. USER PROFILES
 CREATE TABLE IF NOT EXISTS user_profiles (
-    profile_id INT AUTO_INCREMENT PRIMARY KEY,
-    user_id INT NOT NULL,
-    experience_level ENUM('entry', 'mid', 'senior', 'executive') DEFAULT 'entry',
+    user_id INT PRIMARY KEY,
+    experience_level ENUM('entry','mid','senior','executive') DEFAULT 'entry',
     bio TEXT,
     location VARCHAR(150),
     phone VARCHAR(50),
@@ -26,9 +29,11 @@ CREATE TABLE IF NOT EXISTS user_profiles (
     job_preferences JSON,
     desired_salary DECIMAL(10,2),
     last_updated TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
-    FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
+    CONSTRAINT fk_user_profiles_user
+        FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
     CONSTRAINT uq_user_profiles_user UNIQUE (user_id)
-);
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
 
 DELIMITER $$
 CREATE TRIGGER trg_users_after_insert
@@ -53,7 +58,7 @@ CREATE TABLE IF NOT EXISTS user_skills (
     proficiency ENUM('beginner','intermediate','advanced','expert') DEFAULT 'beginner',
     years_experience INT DEFAULT 0,
     FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
-);
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
 -- 4. EDUCATION
 CREATE TABLE IF NOT EXISTS education (
@@ -64,7 +69,7 @@ CREATE TABLE IF NOT EXISTS education (
     field_of_study VARCHAR(100),
     graduation_year YEAR,
     FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
-);
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
 -- 5. CERTIFICATIONS
 CREATE TABLE IF NOT EXISTS certifications (
@@ -75,7 +80,7 @@ CREATE TABLE IF NOT EXISTS certifications (
     year_obtained YEAR,
     expiration_date DATE,
     FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
-);
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
 -- 6. RESUMES
 CREATE TABLE IF NOT EXISTS resumes (
@@ -117,7 +122,7 @@ CREATE TABLE IF NOT EXISTS job_recommendations (
     recommended_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
     FOREIGN KEY (job_id) REFERENCES jobs(job_id) ON DELETE CASCADE
-);
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
 -- 9. SAVED JOBS
 CREATE TABLE IF NOT EXISTS saved_jobs (

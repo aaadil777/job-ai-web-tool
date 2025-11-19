@@ -1,6 +1,7 @@
 from textwrap import dedent
-from gemini_client import GeminiClient
 from typing import Mapping, Any
+import google.generativeai as genai
+import os
 
 DEFAULT_STYLE_GUIDE = """\
 - clear, professional tone
@@ -42,7 +43,7 @@ def _build_prompt(
     ### Job Description
     {job_description}
 
-    ### Canditate Resume Details
+    ### Candidate Resume Details
     Skills:
     {skills}
 
@@ -68,27 +69,35 @@ def _build_prompt(
     """)
 
 class CoverLetterGenerator:
-    def __init__(self, client: GeminiClient | None = None):
-        self.client = client or GeminiClient()
+    def __init__(self, model_name: str | None = None):
+        api_key = os.getenv("GEMINI_API_KEY") or os.getenv("GOOGLE_API_KEY")
+        if api_key:
+            genai.configure(api_key=api_key.strip().strip('"').strip("'"))
+        model_name = model_name or os.getenv("GEMINI_MODEL", "gemini-2.5-flash")
+        
+        self.model = genai.GenerativeModel(
+            model_name,
+            system_instruction="You are a professional writer who crafts clear, concise cover letters."
+        )
 
     def generate_cover_letter(
         self,
-        contacts: str | None = None,
+        contacts: Mapping[str, Any] | None = None,
         sections: dict | None = None,
         tone: str = "professional",
         job_title: str | None = None,
         company: str | None = None,
         job_description: str | None = None,
         job_board: str | None = None,
-    ):
+    ) -> str:
         prompt = _build_prompt(
-            contacts = contacts,
-            sections = sections,
-            tone = tone,
-            job_title = job_title,
-            company = company,
-            job_description = job_description,
-            job_board = job_board,
+            contacts=contacts,
+            sections=sections,
+            tone=tone,
+            job_title=job_title,
+            company=company,
+            job_description=job_description,
+            job_board=job_board,
         )
-        system = "You are a professional writer who writes clear, concise cover letters."
-        return self.client.generate(prompt, system=system)
+        resp = self.model.generate_content(prompt)
+        return (getattr(resp, "text", None) or "").strip()

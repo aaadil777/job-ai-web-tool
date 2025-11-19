@@ -8,6 +8,7 @@ from typing import Any, Dict, List, Tuple
 import sys, os
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 from ml.pre_llm_filter_functions import ParsingFunctionsPreLLM
+from ml.cover_letter_generator import CoverLetterGenerator
 
 from pathlib import Path
 import mammoth
@@ -261,6 +262,43 @@ def _parse_plain_text_with_pre_llm(text: str):
         "sections": sections,
         "contacts": contacts,
     }
+
+def _get_resume_record(resume_id: int):
+    """Fetch resume text, parsed sections, and parsed contacts."""
+    db, cursor = get_db()
+    if db:
+        try:
+            cursor.execute("""
+                SELECT id, user_id, resume_text, parsed_sections, parsed_contacts
+                FROM resumes WHERE id=%s
+            """, (resume_id,))
+            row = cursor.fetchone()
+            if row:
+                # Normalize database data into json for consistency
+                def _as_json(v):
+                    if v is None: return None
+                    if isinstance(v, (dict, list)): return v
+                    try: return json.loads(v)
+                    except Exception: return None
+                return {
+                    "resume_id": row["id"],
+                    "user_id": row.get("user_id"),
+                    "text": row.get("resume_text") or "",
+                    "sections": _as_json(row.get("parsed_sections")),
+                    "contacts": _as_json(row.get("parsed_contacts")),
+                }
+        except Exception as e:
+            app.logger.exception(e)
+
+    r = MEM["resumes"].get(resume_id) or {}
+    return {
+        "resume_id": resume_id,
+        "user_id": r.get("user_id"),
+        "text": r.get("text") or "",
+        "sections": r.get("parsed_sections"),
+        "contacts": r.get("parsed_contacts"),
+    }
+
     
 def _null_if_blank(v):
     """
@@ -867,6 +905,7 @@ def jobs_search():
 
     ## Iterate over each job result
     for job in data.get("results", []):
+        job_id = None
         title = job.get("title")
         company = job.get("company", {}).get("display_name")
         location_name = job.get("location", {}).get("display_name")
@@ -963,6 +1002,7 @@ def jobs_search():
 
         ## Return clean job JSON
         results.append({
+            "job_id": job_id,
             "title": title,
             "company": company,
             "location": location_name,
@@ -1448,6 +1488,121 @@ def get_applied_jobs():
 
     return ok(cursor.fetchall())
 
+
+@app.post("/api/cover_letter")
+def generate_cover_letter_api():
+    """
+    Generates a cover letter according to a resume and job listing input.
+    """
+    body = request.get_json(force=True) or {}
+    persist = body.get("persist", True)
+
+    job_id = body.get("job_id")
+    job_obj = body.get("job") or {} #atleast job_id or job_obj should exist
+    resume_id = body.get("resume_id")
+    match_score = body.get("match_score")
+    candidate_name = (body.get("candidate_name") or "").strip()
+
+    contacts = None
+    sections = None
+    user_id_for_rec = _get_user_id()
+
+    # Pulls job data from payload 'job' as 1st priority and fall back on data from database
+    title = job_obj.get("title")
+    company = job_obj.get("company") or job_obj.get("company_name")
+    description = job_obj.get("full_description") or job_obj.get("description")
+    location = job_obj.get("location")
+    url = job_obj.get("url")
+
+    if (not title or not company or not description) and job_id:
+        db, cursor = get_db()
+        if db:
+            try:
+                cursor.execute("""
+                  SELECT job_id, title, company_name, description, location, url
+                  FROM jobs WHERE job_id=%s
+                """, (job_id,))
+                row = cursor.fetchone()
+                if row:
+                    title = title or row.get("title")
+                    company = company or row.get("company_name")
+                    description = description or row.get("description")
+                    location = location or row.get("location")
+                    url = url or row.get("url")
+            except Exception as e:
+                app.logger.exception(e)
+        # fall back to in-memory store
+        if not description:
+            j = MEM["jobs"].get(job_id)
+            if j:
+                title = title or j.get("title")
+                company = company or j.get("company")
+                description = description or j.get("description") or j.get("full_description")
+                location = location or j.get("location")
+                url = url or j.get("url")
+
+    if resume_id:
+        r = _get_resume_record(resume_id)
+        resume_text = r.get("text") or ""
+        contacts = r.get("contacts")
+        sections = r.get("sections")
+        if r.get("user_id") is not None:
+            user_id_for_rec = r.get("user_id")
+
+    # Generate the cover letter
+    use_gemini = bool(GEMINI_API_KEY)
+    cover_letter_text = None
+    resume_bullets = []
+
+    if use_gemini:
+        try:
+            generator = CoverLetterGenerator()
+            cover_letter_text = generator.generate_cover_letter(
+                contacts=contacts,
+                sections=sections,
+                tone="professional",
+                job_title=title,
+                company=company,
+                job_description=description,
+                job_board=(job_obj.get("job_board") or None),
+            )
+        except Exception as e:
+            app.logger.exception(f"Gemini generation failed, falling back: {e}")
+
+    # Optionally persist to job_recommendations
+    if persist:
+        db, cursor = get_db()
+        if db and user_id_for_rec and job_id:
+            try:
+                cursor.execute("""
+                    INSERT INTO job_recommendations
+                      (user_id, job_id, match_score, generated_resume, generated_cover_letter, recommended_at)
+                    VALUES
+                      (%s, %s, %s, %s, %s, NOW())
+                """, (
+                    user_id_for_rec,
+                    int(job_id),
+                    float(match_score) if match_score is not None else None,
+                    None,  # we don't generate resumes here, it happens in another function
+                    cover_letter_text,
+                ))
+                db.commit()
+            except Exception as e:
+                app.logger.exception(f"Failed to persist job_recommendation: {e}")
+        else:
+            # memory fallback
+            MEM.setdefault("job_recommendations", []).append({
+                "user_id": user_id_for_rec,
+                "job_id": job_id,
+                "match_score": match_score,
+                "generated_cover_letter": cover_letter_text,
+                "ts": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
+            })
+
+    return ok({
+        "cover_letter": cover_letter_text,
+        "resume_bullets": resume_bullets
+    })
 
 # -----------------------------
 # Main
