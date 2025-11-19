@@ -1,5 +1,4 @@
 -- SQL schema and database setup
-
 CREATE DATABASE IF NOT EXISTS jobhunter_ai;
 USE jobhunter_ai;
 
@@ -7,6 +6,7 @@ USE jobhunter_ai;
 CREATE TABLE IF NOT EXISTS users (
     id INT AUTO_INCREMENT PRIMARY KEY,
     full_name VARCHAR(100) NOT NULL,
+    title VARCHAR(100),
     email VARCHAR(100) UNIQUE NOT NULL,
     password_hash VARCHAR(255) NOT NULL,
     role ENUM('jobseeker', 'recruiter', 'admin') DEFAULT 'jobseeker',
@@ -22,11 +22,28 @@ CREATE TABLE IF NOT EXISTS user_profiles (
     location VARCHAR(150),
     phone VARCHAR(50),
     desired_industry VARCHAR(150),
+    phone VARCHAR(50),
     job_preferences JSON,
     desired_salary DECIMAL(10,2),
     last_updated TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
-    FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+    FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
+    CONSTRAINT uq_user_profiles_user UNIQUE (user_id)
 );
+
+DELIMITER $$
+CREATE TRIGGER trg_users_after_insert
+AFTER INSERT ON users
+FOR EACH ROW
+BEGIN
+  INSERT INTO user_profiles (user_id) VALUES (NEW.id);
+END$$
+DELIMITER ;
+
+-- ** TEMPORARY USER FOR TESTING, CAN REMOVE LATER WHEN AUTH USER IS CREATED **
+INSERT INTO users (id, full_name, title, email, password_hash)
+VALUES (1, 'Demo User', '—', 'demo@example.com', 'dev');
+
+UPDATE user_profiles SET phone='', location='', desired_salary=NULL WHERE user_id=1;
 
 -- 3. USER SKILLS
 CREATE TABLE IF NOT EXISTS user_skills (
@@ -63,17 +80,15 @@ CREATE TABLE IF NOT EXISTS certifications (
 -- 6. RESUMES
 CREATE TABLE IF NOT EXISTS resumes (
   id INT AUTO_INCREMENT PRIMARY KEY,
-  user_id INT NULL,                    -- **add later when authenticated user id is available**                              
+  user_id INT NULL,
   resume_text LONGTEXT NOT NULL,
   file_name VARCHAR(255) NULL,
   parsed_sections JSON NULL,
   parsed_contacts JSON NULL,
   created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
   INDEX idx_resumes_user_created (user_id, created_at DESC),
-  CONSTRAINT fk_resumes_user
-    FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+  CONSTRAINT fk_resumes_user FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
 );
-
 
 -- 7. JOBS
 CREATE TABLE IF NOT EXISTS jobs (
@@ -84,9 +99,11 @@ CREATE TABLE IF NOT EXISTS jobs (
     description TEXT,
     location VARCHAR(100),
     requirements TEXT,
+    url VARCHAR(255),
     salary_range VARCHAR(100),
     source ENUM('internal','api') DEFAULT 'internal',
-    posted_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+    posted_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    UNIQUE KEY uq_job_unique (title, company_name, location, url)
 );
 
 -- 8. JOB RECOMMENDATIONS
@@ -109,44 +126,7 @@ CREATE TABLE IF NOT EXISTS saved_jobs (
     job_id INT NOT NULL,
     date_saved DATETIME DEFAULT CURRENT_TIMESTAMP,
     notes VARCHAR(255),
-
-    CONSTRAINT fk_savedjobs_user
-        FOREIGN KEY (user_id)
-        REFERENCES users(id)
-        ON DELETE CASCADE,
-
-    CONSTRAINT fk_savedjobs_job
-        FOREIGN KEY (job_id)
-        REFERENCES jobs(job_id)
-        ON DELETE CASCADE
+    CONSTRAINT fk_savedjobs_user FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
+    CONSTRAINT fk_savedjobs_job  FOREIGN KEY (job_id)  REFERENCES jobs(job_id) ON DELETE CASCADE,
+    UNIQUE KEY uq_user_job (user_id, job_id)
 );
-
--- Prevent users from saving the same job multiple times
-ALTER TABLE saved_jobs
-    ADD UNIQUE KEY uq_user_job (user_id, job_id);
-
--- 10. Ensure jobs table supports API persistence
--- Add URL and source columns if missing (for Adzuna/API jobs)
-ALTER TABLE jobs
-    ADD COLUMN IF NOT EXISTS url VARCHAR(255),
-    ADD COLUMN IF NOT EXISTS source ENUM('internal','api') DEFAULT 'internal';
-
--- Create a unique composite key to prevent duplicates
--- This allows UPSERT (ON DUPLICATE KEY UPDATE) in Flask
-ALTER TABLE jobs
-    ADD UNIQUE KEY uq_job_unique (title, company_name, location, url);
-
--- 11. APPLIED JOBS
-CREATE TABLE IF NOT EXISTS applied_jobs (
-    applied_id INT AUTO_INCREMENT PRIMARY KEY,
-    user_id INT NOT NULL,
-    job_id INT NOT NULL,
-    applied_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-    status ENUM('applied') DEFAULT 'applied',
-
-    FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
-    FOREIGN KEY (job_id) REFERENCES jobs(job_id) ON DELETE CASCADE
-);
-
-ALTER TABLE applied_jobs
-    ADD UNIQUE KEY uq_applied_user_job (user_id, job_id);

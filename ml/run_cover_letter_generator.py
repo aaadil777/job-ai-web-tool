@@ -1,9 +1,19 @@
 from pre_llm_filter_functions import ParsingFunctionsPreLLM
 from cover_letter_generator import CoverLetterGenerator
 from pprint import pprint
+"""
+How to run this file:
 
+    .env variables needed:
+        - GEMINI_API_KEY (required)
+        - GEMINI_MODEL (optional, defaults to "gemini-2.5-flash")
+    
+    modifiable variables:
+        - job_description, company, job_title, tone (editable on the current file)
+        - edit the file path under variable parser to route to a different resume pdf.
+"""
 # MOCK DATA (FOR TESTING PURPOSES)
-job_discription = """
+job_description = """
 Job Responsibilities:
 Design, develop, and maintain software applications
 Collaborate with cross-functional teams to define, design, and ship new features
@@ -46,7 +56,7 @@ if __name__ == "__main__":
     letter = generate_it.generate_cover_letter(
         contacts = contacts,
         sections = sections,
-        job_description = job_discription,
+        job_description = job_description,
         company = company,
         job_title = job_title,
         tone = tone

@@ -262,6 +262,31 @@ def _parse_plain_text_with_pre_llm(text: str):
         "contacts": contacts,
     }
     
+def _null_if_blank(v):
+    """
+    Returns null if string entry is blank.
+    """
+    if v is None:
+        return None
+    if isinstance(v, str) and v.strip() == "":
+        return None
+    return v
+
+def _decimal_or_null(v):
+    """Returns null if decimal entry is blank. Rounds to whole number."""
+    if v is None:
+        return None
+    if isinstance(v, (int, float)):
+        return int(float(v))  
+    s = str(v).strip()
+    if not s:
+        return None
+    s = re.sub(r"[^\d.\-]", "", s)
+    try:
+        return int(float(s))
+    except Exception:
+        return None
+    
 # -----------------------------
 # Original routes
 # -----------------------------
@@ -1182,7 +1207,7 @@ def _get_current_user_id():
 
 @app.get("/api/users/me")
 def get_user_profile():
-    """Fetch current user's profile data."""
+    """Fetch current user's profile data (names mapped for UI)."""
     user_id = _get_current_user_id()
     if not user_id:
         return bad("Unauthorized: missing X-User-Id header", 401)
@@ -1196,8 +1221,8 @@ def get_user_profile():
             SELECT 
                 u.id AS user_id,
                 u.full_name,
+                u.title,
                 u.email,
-                u.role,
                 p.location,
                 p.phone,
                 p.experience_level,
@@ -1211,61 +1236,93 @@ def get_user_profile():
         if not row:
             return bad("User not found", 404)
 
-        # Convert JSON string to dict
-        if isinstance(row.get("job_preferences"), str):
+        # Use JSON if needed
+        prefs = row.get("job_preferences")
+        if isinstance(prefs, str):
             try:
-                row["job_preferences"] = json.loads(row["job_preferences"])
+                prefs = json.loads(prefs) or {}
             except Exception:
-                row["job_preferences"] = {}
+                prefs = {}
+        elif not isinstance(prefs, dict):
+            prefs = {}
 
-        return ok(row)
+        payload = {
+            "user_id": row["user_id"],
+            "name": row.get("full_name") or "",
+            "title": row.get("title") or "",
+            "email": row.get("email") or "",
+            "location": row.get("location") or "",
+            "phone": row.get("phone") or "",
+            "desired_salary": str(row.get("desired_salary") or ""),
+            "job_preferences": prefs,
+            "pref_locations": ", ".join(prefs.get("locations", [])) if isinstance(prefs.get("locations"), list) else "",
+            "pref_type": prefs.get("type", "") or "",
+            "pref_salary": str(row.get("desired_salary") or ""),
+        }
+        return ok(payload)
     except Exception as e:
         app.logger.exception(e)
         return bad("Error fetching user profile", 500)
 
 
+
 @app.put("/api/users/me/profile")
 def update_user_profile():
-    """Update the current user's profile fields."""
+    """Update the current user's profile fields (keys aligned with UI)."""
     user_id = _get_current_user_id()
     if not user_id:
         return bad("Unauthorized: missing X-User-Id header", 401)
 
     data = request.get_json(force=True) or {}
-    full_name = data.get("full_name")
-    email = data.get("email")
-    role = data.get("role")
-    location = data.get("location")
-    phone = data.get("phone")
-    job_preferences = data.get("job_preferences") or {}
-    desired_salary = data.get("desired_salary")
+
+    name = _null_if_blank(data.get("name"))
+    title = _null_if_blank(data.get("title"))
+    email = _null_if_blank(data.get("email"))
+    location = _null_if_blank(data.get("location"))
+    phone = _null_if_blank(data.get("phone"))
+
+    desired_salary = _decimal_or_null(data.get("desired_salary")) \
+        if data.get("desired_salary") is not None else _decimal_or_null(data.get("pref_salary"))
+
+    job_prefs = data.get("job_preferences")
+    if not isinstance(job_prefs, dict):
+        pref_locs_raw = _null_if_blank(data.get("pref_location"))  
+        locations = []
+        if pref_locs_raw:
+            locations = [p.strip() for p in pref_locs_raw.split(",") if p.strip()]
+        pref_type = _null_if_blank(data.get("pref_type"))
+        job_prefs = {
+            "locations": locations,
+            "type": pref_type or ""
+        }
 
     db, cursor = get_db()
     if not db:
         return bad("Database not configured", 500)
 
     try:
-        # Update base user info
-        if any([full_name, email, role]):
+        # Update user info
+        if any([name is not None, title is not None, email is not None]):
             cursor.execute("""
                 UPDATE users
                 SET 
                     full_name = COALESCE(%s, full_name),
-                    email = COALESCE(%s, email),
-                    role = COALESCE(%s, role)
+                    title      = COALESCE(%s, title),
+                    email      = COALESCE(%s, email)
                 WHERE id = %s
-            """, (full_name, email, role, user_id))
+            """, (name, title, email, user_id))
 
-        # Update or insert profile info
+        # Update profile row
         cursor.execute("""
-            INSERT INTO user_profiles (user_id, location, phone, job_preferences, desired_salary)
-            VALUES (%s, %s, %s, %s, %s)
-            ON DUPLICATE KEY UPDATE
-                location = VALUES(location),
-                phone = VALUES(phone),
-                job_preferences = VALUES(job_preferences),
-                desired_salary = VALUES(desired_salary)
-        """, (user_id, location, phone, json.dumps(job_preferences), desired_salary))
+            UPDATE user_profiles
+            SET 
+                location       = COALESCE(%s, location),
+                phone          = COALESCE(%s, phone),
+                desired_salary = COALESCE(%s, desired_salary),
+                job_preferences = COALESCE(%s, job_preferences)
+            WHERE user_id = %s
+        """, (location, phone, desired_salary, json.dumps(job_prefs), user_id))
+
 
         db.commit()
         return ok({"message": "Profile updated successfully"})
