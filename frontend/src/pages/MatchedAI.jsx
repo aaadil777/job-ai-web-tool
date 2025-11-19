@@ -26,8 +26,6 @@ export default function MatchedAI() {
   const [selectedJob, setSelectedJob] = useState(null)
   const [filterAppliedButNoResults, setFilterAppliedButNoResults] = useState(false)
   const [unfilteredTotalResults, setUnfilteredTotalResults] = useState(null)
-  const [saveBusy, setSaveBusy] = useState(false)
-  const [saveDone, setSaveDone] = useState(false)
   const [copyStatus, setCopyStatus] = useState('')
 
   const formatSalary = (val) => `$${Math.round((val || 0) / 1000)}k`
@@ -116,7 +114,6 @@ export default function MatchedAI() {
     setCoverModalContent('')
     setCoverModalBullets([])
     setCopyStatus('')
-    setSaveDone(false)
     setCoverModalOpen(true)
     setCoverModalLoading(true)
 
@@ -183,30 +180,6 @@ export default function MatchedAI() {
     a.click()
     a.remove()
     URL.revokeObjectURL(url)
-  }
-
-  const handleSaveRecommendation = async () => {
-    if (!selectedJob) return
-    setSaveBusy(true)
-    setSaveDone(false)
-    try {
-      const resumeId = Number(localStorage.getItem('resume_id') || 0) || undefined
-      const payload = {
-        resume_id: resumeId,
-        job_id: selectedJob.job_id,
-        job: selectedJob,
-        persist: true,
-        match_score: selectedJob.score ?? selectedJob.matchScore ?? undefined,
-      }
-      await generateCoverLetter(payload)
-      setSaveDone(true)
-      setTimeout(() => setSaveDone(false), 2000)
-    } catch (err) {
-      console.error('saveRecommendation failed', err)
-      setCoverModalError(String(err?.message || err || 'Failed to save recommendation'))
-    } finally {
-      setSaveBusy(false)
-    }
   }
 
   return (
@@ -452,14 +425,6 @@ v-4.875c0-.621.504-1.125 1.125-1.125h2.25c.621 0 1.125.504 1.125 1.125V21h4.125c
                         title="Download .txt"
                       >
                         Download .txt
-                      </button>
-
-                      <button
-                        onClick={handleSaveRecommendation}
-                        disabled={saveBusy || !selectedJob}
-                        title="Save to recommendations"
-                      >
-                        {saveDone ? 'Saved ✓' : (saveBusy ? 'Saving…' : 'Save to recommendations')}
                       </button>
 
                       <button onClick={() => { if (!coverModalLoading) setCoverModalOpen(false) }}>

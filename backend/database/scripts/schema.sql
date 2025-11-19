@@ -27,15 +27,12 @@ CREATE TABLE IF NOT EXISTS user_profiles (
     phone VARCHAR(50),
     job_preferences JSON,
     desired_salary DECIMAL(10,2),
-    phone VARCHAR(50),
-    job_preferences JSON,
     last_updated TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
     CONSTRAINT fk_user_profiles_user
-        FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
-    FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
+        FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
     CONSTRAINT uq_user_profiles_user UNIQUE (user_id)
-);
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
 
 DELIMITER $$
 CREATE TRIGGER trg_users_after_insert
