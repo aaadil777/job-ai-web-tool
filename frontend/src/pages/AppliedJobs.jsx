@@ -5,12 +5,28 @@ import './jobAI.css'
 export default function AppliedJobs() {
   useEffect(() => { document.title = 'Applied Jobs – jobhunter.ai' }, [])
 
-  // Placeholder for database/API fetch logic
   useEffect(() => {
-      // TODO: Insert API/database fetch call here
-      fetch("/mocks/appliedjobs.json")
-        .then((response) => response.json())
-        .then((data) => setJobs(data))
+    async function loadAppliedJobs() {
+      try {
+        const res = await fetch('/api/users/me/applied-jobs', {
+          credentials: 'include',
+        })
+
+        if (!res.ok) {
+          console.error('Failed to load applied jobs', res.status)
+          setJobs([])
+          return
+        }
+
+        const data = await res.json()
+        setJobs(Array.isArray(data) ? data : [])
+      } catch (err) {
+        console.error('Error fetching applied jobs', err)
+        setJobs([])
+      }
+    }
+
+    loadAppliedJobs()
   }, [])
 
   const [jobs, setJobs] = useState([]);
@@ -80,6 +96,15 @@ export default function AppliedJobs() {
 }
 
 function JobCard({job, formatSalary}) {
+  const title = job.title
+  const company = job.company_name || job.company
+  const location = job.location
+  const salaryText =
+    job.salary_range ||
+    (job.salaryMin && job.salaryMax
+      ? `${formatSalary(job.salaryMin)} - ${formatSalary(job.salaryMax)}`
+      : 'Not specified')
+
   return (
     <div data-slot="card" className="bg-card text-card-foreground border" style={{padding: '12px 16px'}}>
       <div data-slot="card-header" style={{textAlign: 'left'}}>
@@ -104,9 +129,15 @@ function JobCard({job, formatSalary}) {
 
       <div data-slot="card-content">
         <div style={{ display:'flex', gap:8, justifyContent:'flex-end', paddingTop:6}}>
-          <a href={job.url || '#'}><button>View</button></a>
+          <a
+            href={job.url || '#'}
+            target="_blank"
+            rel="noopener noreferrer"
+          >
+            <button>View</button>
+          </a>
         </div>
       </div>
     </div>
-  );
+  )
 }

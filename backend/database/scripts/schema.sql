@@ -23,7 +23,6 @@ CREATE TABLE IF NOT EXISTS user_profiles (
     experience_level ENUM('entry','mid','senior','executive') DEFAULT 'entry',
     bio TEXT,
     location VARCHAR(150),
-    phone VARCHAR(50),
     desired_industry VARCHAR(150),
     phone VARCHAR(50),
     job_preferences JSON,
@@ -43,10 +42,6 @@ BEGIN
   INSERT INTO user_profiles (user_id) VALUES (NEW.id);
 END$$
 DELIMITER ;
-
--- ** TEMPORARY USER FOR TESTING, CAN REMOVE LATER WHEN AUTH USER IS CREATED **
-INSERT INTO users (id, full_name, title, email, password_hash)
-VALUES (1, 'Demo User', '—', 'demo@example.com', 'dev');
 
 UPDATE user_profiles SET phone='', location='', desired_salary=NULL WHERE user_id=1;
 
@@ -135,3 +130,17 @@ CREATE TABLE IF NOT EXISTS saved_jobs (
     CONSTRAINT fk_savedjobs_job  FOREIGN KEY (job_id)  REFERENCES jobs(job_id) ON DELETE CASCADE,
     UNIQUE KEY uq_user_job (user_id, job_id)
 );
+
+-- 10. APPLIED JOBS
+CREATE TABLE IF NOT EXISTS applied_jobs (
+    applied_id INT AUTO_INCREMENT PRIMARY KEY,
+    user_id INT NOT NULL,
+    job_id INT NOT NULL,
+    applied_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    CONSTRAINT fk_appliedjobs_user FOREIGN KEY (user_id)
+        REFERENCES users(id) ON DELETE CASCADE,
+    CONSTRAINT fk_appliedjobs_job FOREIGN KEY (job_id)
+        REFERENCES jobs(job_id) ON DELETE CASCADE,
+    UNIQUE KEY uq_applied_user_job (user_id, job_id)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+

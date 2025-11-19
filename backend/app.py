@@ -1459,8 +1459,8 @@ def apply_to_job():
 
     try:
         cursor.execute("""
-            INSERT INTO applied_jobs (user_id, job_id, status)
-            VALUES (%s, %s, 'applied')
+            INSERT INTO applied_jobs (user_id, job_id)
+            VALUES (%s, %s)
         """, (user_id, job_id))
 
         db.commit()
@@ -1477,9 +1477,9 @@ def get_applied_jobs():
     db, cursor = get_db()
 
     cursor.execute("""
-        SELECT aj.applied_id, aj.applied_at, aj.status,
-               j.job_id, j.title, j.company_name, j.location,
-               j.salary_range, j.url, j.source
+        SELECT aj.applied_id, aj.applied_at,
+            j.job_id, j.title, j.company_name, j.location,
+            j.salary_range, j.url, j.source
         FROM applied_jobs aj
         JOIN jobs j ON aj.job_id = j.job_id
         WHERE aj.user_id = %s
