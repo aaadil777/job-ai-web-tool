@@ -18,4 +18,3 @@ frontend/node_modules/
 
 # database tester
 backend/db_test.pyvenv/
-backend/db_test
