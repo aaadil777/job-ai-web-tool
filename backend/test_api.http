@@ -1,5 +1,5 @@
 ### Test 1: Valid POST Request
-POST http://127.0.0.1:5000/api/jobs/recommend
+POST http://127.0.0.1:5001/api/jobs/recommend
 Content-Type: application/json
 
 {
@@ -9,7 +9,7 @@ Content-Type: application/json
 }
 
 ### Test 2: Missing Field
-POST http://127.0.0.1:5000/api/jobs/recommend
+POST http://127.0.0.1:5001/api/jobs/recommend
 Content-Type: application/json
 
 {
@@ -18,7 +18,7 @@ Content-Type: application/json
 }
 
 ### Test 3: Adzuna Job Search
-POST http://127.0.0.1:5000/api/jobs/search
+POST http://127.0.0.1:5001/api/jobs/search
 Content-Type: application/json
 
 {
@@ -30,11 +30,11 @@ Content-Type: application/json
 }
 
 ### Test 4 Get User Profile
-GET http://localhost:5000/api/users/me
+GET http://localhost:5001/api/users/me
 X-User-Id: 1
 
 ### Test 5: Update User Profile
-PUT http://localhost:5000/api/users/me/profile
+PUT http://localhost:5001/api/users/me/profile
 Content-Type: application/json
 X-User-Id: 1
 
@@ -48,4 +48,31 @@ X-User-Id: 1
     "type": "Full-time"
   },
   "desired_salary": 1234
+}
+
+### Test 6: Save Job (job_id must exist from Test 3 response)
+POST http://127.0.0.1:5001/api/users/me/saved-jobs
+Content-Type: application/json
+X-User-Id: 1
+
+{
+  "job_id": 1,
+  "notes": "This one looks interesting"
+}
+
+### Test 7: Get Saved Jobs
+GET http://127.0.0.1:5001/api/users/me/saved-jobs
+X-User-Id: 1
+
+### Test 8: Remove Saved Job
+DELETE http://127.0.0.1:5001/api/users/me/saved-jobs/1
+X-User-Id: 1
+
+### Test 9: Apply for a job (job should exist from Test 3 response)
+POST http://127.0.0.1:5001/api/users/me/applied-jobs
+Content-Type: application/json
+X-User-Id: 1
+
+{
+  "job_id": 22
 }
