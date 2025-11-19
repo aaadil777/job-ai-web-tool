@@ -15,7 +15,7 @@ import pdfplumber
 from io import BytesIO
 import html as _html
 
-from flask import Flask, request, jsonify
+from flask import Flask, request, jsonify, make_response
 from flask_cors import CORS
 from dotenv import load_dotenv
 
@@ -52,6 +52,11 @@ origins = [o.strip() for o in _allow.split(",") if o.strip()]
 # Always give Flask-CORS a list (never None)
 if not origins:
     origins = ["*"]  # Allow all for local dev
+
+# JWT Utilities
+JWT_SECRET = os.getenv("JWT_SECRET", "super-secret-key")
+JWT_ALGO = "HS256"
+JWT_EXPIRE_MINUTES = 30     # access token duartion
 
 @app.errorhandler(413)
 def too_large(e):
@@ -1325,6 +1330,124 @@ def update_user_profile():
         db.rollback()
         app.logger.exception(e)
         return bad("Error updating profile", 500)
+
+# Saved Jobs endpoints
+@app.get("/api/users/me/saved-jobs")
+def get_saved_jobs():
+    user_id = _get_current_user_id()
+    if not user_id:
+        return bad("Unauthorized", 401)
+
+    db, cursor = get_db()
+    if not db:
+        return ok([])
+
+    cursor.execute("""
+        SELECT sj.saved_job_id, sj.date_saved, sj.notes,
+               j.job_id, j.title, j.company_name, j.location,
+               j.industry, j.salary_range, j.url, j.source, j.description
+        FROM saved_jobs sj
+        JOIN jobs j ON sj.job_id = j.job_id
+        WHERE sj.user_id = %s
+        ORDER BY sj.date_saved DESC
+    """, (user_id,))
+    rows = cursor.fetchall()
+    return ok(rows)
+
+
+@app.post("/api/users/me/saved-jobs")
+def save_job():
+    user_id = _get_current_user_id()
+    if not user_id:
+        return bad("Unauthorized", 401)
+
+    data = request.get_json(force=True)
+    job_id = data.get("job_id")
+    notes = data.get("notes")
+
+    if not job_id:
+        return bad("Missing job_id")
+
+    db, cursor = get_db()
+    if not db:
+        return bad("Database not configured", 500)
+
+    try:
+        cursor.execute("""
+            INSERT INTO saved_jobs (user_id, job_id, notes)
+            VALUES (%s, %s, %s)
+        """, (user_id, job_id, notes))
+        db.commit()
+        return ok({"message": "Job saved"})
+    except mysql.connector.IntegrityError:
+        return bad("Job already saved", 409)
+
+
+@app.delete("/api/users/me/saved-jobs/<int:job_id>")
+def delete_saved_job(job_id):
+    user_id = _get_current_user_id()
+    if not user_id:
+        return bad("Unauthorized", 401)
+
+    db, cursor = get_db()
+    if not db:
+        return bad("Database not configured", 500)
+
+    cursor.execute("""
+        DELETE FROM saved_jobs
+        WHERE user_id=%s AND job_id=%s
+    """, (user_id, job_id))
+
+    db.commit()
+
+    return ok({"message": "Removed job"})
+
+## Applied Jobs Endpoints
+@app.post("/api/users/me/applied-jobs")
+def apply_to_job():
+    user_id = _get_current_user_id()
+    if not user_id:
+        return bad("Unauthorized", 401)
+
+    data = request.get_json(force=True)
+    job_id = data.get("job_id")
+
+    if not job_id:
+        return bad("Missing job_id")
+
+    db, cursor = get_db()
+
+    try:
+        cursor.execute("""
+            INSERT INTO applied_jobs (user_id, job_id, status)
+            VALUES (%s, %s, 'applied')
+        """, (user_id, job_id))
+
+        db.commit()
+        return ok({"message": "Job marked as applied"})
+    except mysql.connector.IntegrityError:
+        return bad("You already applied to this job", 409)
+
+@app.get("/api/users/me/applied-jobs")
+def get_applied_jobs():
+    user_id = _get_current_user_id()
+    if not user_id:
+        return bad("Unauthorized", 401)
+
+    db, cursor = get_db()
+
+    cursor.execute("""
+        SELECT aj.applied_id, aj.applied_at, aj.status,
+               j.job_id, j.title, j.company_name, j.location,
+               j.salary_range, j.url, j.source
+        FROM applied_jobs aj
+        JOIN jobs j ON aj.job_id = j.job_id
+        WHERE aj.user_id = %s
+        ORDER BY aj.applied_at DESC
+    """, (user_id,))
+
+    return ok(cursor.fetchall())
+
 
 # -----------------------------
 # Main

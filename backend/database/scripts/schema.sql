@@ -20,6 +20,7 @@ CREATE TABLE IF NOT EXISTS user_profiles (
     experience_level ENUM('entry', 'mid', 'senior', 'executive') DEFAULT 'entry',
     bio TEXT,
     location VARCHAR(150),
+    phone VARCHAR(50),
     desired_industry VARCHAR(150),
     phone VARCHAR(50),
     job_preferences JSON,
