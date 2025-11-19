@@ -1,21 +1,69 @@
 import { useState, useEffect} from 'react'
-import { Link } from 'react-router-dom'
+import { Link, useNavigate } from 'react-router-dom'
+import { useAuth } from '../auth/AuthContext'
 import './jobAI.css'
+import { getSavedJobs, deleteSavedJob, applyJob } from '../api/api'
 
 export default function SavedJobs() {
   useEffect(() => { document.title = 'Saved Jobs – jobhunter.ai' }, [])
 
- // Placeholder for database/API fetch logic
-  useEffect(() => {
-      // TODO: Insert API/database fetch call here
-      fetch("/mocks/savedjobs.json")
-        .then((response) => response.json())
-        .then((data) => setJobs(data))
-  }, [])
+  const [jobs, setJobs] = useState([])
+  const [loading, setLoading] = useState(false)
+  const [error, setError] = useState('')
+  const { token } = useAuth() || {}
+  const navigate = useNavigate()
+  const [unauthorized, setUnauthorized] = useState(false)
 
-  const [jobs, setJobs] = useState([]);
-  
-  const formatSalary = (val) => `$${Math.round(val / 1000)}k`
+  const formatSalary = (val) => `$${Math.round((val || 0) / 1000)}k`
+
+  const fetchSaved = async () => {
+    setLoading(true)
+    setError('')
+    if (!token) {
+      setUnauthorized(true)
+      setJobs([])
+      setLoading(false)
+      return
+    }
+    try {
+      const data = await getSavedJobs()
+      // backend returns an array of rows; normalize if needed
+      setJobs(Array.isArray(data) ? data : (data.results || []))
+    } catch (err) {
+      console.error('getSavedJobs failed', err)
+      setError(String(err?.message || err || 'Failed to load saved jobs'))
+      setJobs([])
+    } finally {
+      setLoading(false)
+    }
+  }
+
+  useEffect(() => { setUnauthorized(false); fetchSaved() }, [token])
+
+  const handleRemove = async (job) => {
+    if (!job || !job.job_id) return
+    try {
+      await deleteSavedJob(job.job_id)
+      // refresh list
+      await fetchSaved()
+    } catch (err) {
+      console.error('deleteSavedJob failed', err)
+      setError(String(err?.message || err || 'Failed to remove saved job'))
+    }
+  }
+
+  const handleApply = async (job) => {
+    if (!job || !job.job_id) return
+    try {
+      await applyJob(job.job_id)
+      // Optionally remove from saved after applying
+      try { await deleteSavedJob(job.job_id) } catch (e) { /* ignore */ }
+      await fetchSaved()
+    } catch (err) {
+      console.error('applyJob failed', err)
+      setError(String(err?.message || err || 'Failed to apply to job'))
+    }
+  }
 
   return (
     <div>
@@ -51,36 +99,44 @@ export default function SavedJobs() {
           <h1>Saved Jobs</h1>
           <p className="text-muted-foreground">Jobs you marked to review or apply later.</p>
 
-          <section id="savedList" className="jobs" style={{ width: '100vw', maxWidth: '100%', display: 'grid', gap: '14px', marginTop: '18px', boxSizing: 'border-box' }}>
-            {jobs.length === 0 && (
-            <div id="savedEmpty" style={{
-              display: 'none',
-              padding: '36px',
-              borderRadius: '12px',
-              border: '1px dashed var(--border)',
-              textAlign: 'center',
-              color: 'var(--muted)'
-            }}>
-              <p style={{ margin: '0 0 8px' }}>No saved jobs yet.</p>
-              <p style={{ margin: '0' }}>
-                <Link to="/matchedAI" style={{ color: 'var(--brand)', textDecoration: 'none' }}>
-                  Browse matched jobs →
-                </Link>
-              </p>
+          {error ? <div style={{ color: 'crimson', marginBottom: 8 }}>{error}</div> : null}
+
+          {unauthorized ? (
+            <div style={{ padding: 24, borderRadius: 8, border: '1px solid var(--border)', textAlign: 'center' }}>
+              <h3 style={{ marginTop: 0 }}>Sign in to view your saved jobs</h3>
+              <p style={{ color: 'var(--muted)' }}>Saved jobs are persisted to your account. Please sign in or create an account to see them.</p>
+              <div style={{ display: 'flex', gap: 8, justifyContent: 'center', marginTop: 12 }}>
+                <button onClick={() => navigate('/signIn')} style={{ padding: '8px 12px' }}>Sign In</button>
+                <button onClick={() => navigate('/createNewUser')} style={{ padding: '8px 12px' }}>Create Account</button>
+              </div>
             </div>
-            )}
-          {/* Populate job cards */}
-          {jobs.map((job,index) => (
-          <JobCard key={index} job={job} formatSalary={formatSalary}/>
-          ))}
-          </section>
+          ) : (
+            <section id="savedList" className="jobs" style={{ width: '100vw', maxWidth: '100%', display: 'grid', gap: '14px', marginTop: '18px', boxSizing: 'border-box' }}>
+              {loading && (<div>Loading…</div>)}
+              {!loading && jobs.length === 0 && (
+                <div id="savedEmpty" style={{ padding: '36px', borderRadius: '12px', border: '1px dashed var(--border)', textAlign: 'center', color: 'var(--muted)' }}>
+                  <p style={{ margin: '0 0 8px' }}>No saved jobs yet.</p>
+                  <p style={{ margin: '0' }}>
+                    <Link to="/matchedAI" style={{ color: 'var(--brand)', textDecoration: 'none' }}>
+                      Browse matched jobs →
+                    </Link>
+                  </p>
+                </div>
+              )}
+
+              {/* Populate job cards */}
+              {jobs.map((job,index) => (
+                <JobCard key={job.job_id || index} job={job} formatSalary={formatSalary} onRemove={() => handleRemove(job)} onApply={() => handleApply(job)} />
+              ))}
+            </section>
+          )}
         </main>
       </div>
     </div>
   )
 }
 
-function JobCard({job, formatSalary}) {
+function JobCard({job, formatSalary, onRemove, onApply}) {
   return (
     <div data-slot="card" className="bg-card text-card-foreground border" style={{padding: '12px 16px'}}>
       <div data-slot="card-header" style={{textAlign: 'left'}}>
@@ -106,10 +162,10 @@ function JobCard({job, formatSalary}) {
       <div data-slot="card-content">
         <div style={{ display:'flex', gap:8, justifyContent:'flex-end', paddingTop:6}}>
           <a href={job.url || '#'}><button>View</button></a>
-          <button>Remove</button>
-          <button>Apply</button>
+          <button onClick={() => onRemove && onRemove()}>Remove</button>
+          <button onClick={() => onApply && onApply()}>Apply</button>
         </div>
       </div>
     </div>
-  );
+  )
 }

@@ -1,7 +1,8 @@
 import { useState, useEffect, useMemo, useCallback } from 'react'
+import DOMPurify from 'dompurify'
 import { Link } from 'react-router-dom'
 import './jobAI.css'
-import { searchJobs, getRecommendations, generateCoverLetter } from '../api/api'
+import { searchJobs, getRecommendations, generateCoverLetter, saveJob, applyJob, getJob } from '../api/api'
 
 export default function MatchedAI() {
   useEffect(() => { document.title = 'AI Matched Jobs – jobhunter.ai' }, [])
@@ -24,6 +25,9 @@ export default function MatchedAI() {
   const [coverModalContent, setCoverModalContent] = useState('')
   const [coverModalBullets, setCoverModalBullets] = useState([])
   const [selectedJob, setSelectedJob] = useState(null)
+  const [jobModalOpen, setJobModalOpen] = useState(false)
+  const [jobModalMessage, setJobModalMessage] = useState('')
+  const [jobActionLoading, setJobActionLoading] = useState(false)
   const [filterAppliedButNoResults, setFilterAppliedButNoResults] = useState(false)
   const [unfilteredTotalResults, setUnfilteredTotalResults] = useState(null)
   const [copyStatus, setCopyStatus] = useState('')
@@ -128,6 +132,57 @@ export default function MatchedAI() {
       setCoverModalError(String(err?.message || err || 'Failed to generate cover letter'))
     } finally {
       setCoverModalLoading(false)
+    }
+  }
+
+  // Open job detail modal
+  const openJobModal = (job) => {
+    setJobModalMessage('')
+    setJobModalOpen(true)
+    // If job_id present, fetch fresh details from backend
+    if (job && job.job_id) {
+      getJob(job.job_id).then((data) => {
+        setSelectedJob(data)
+      }).catch((err) => {
+        console.error('getJob failed', err)
+        // fall back to using provided job object
+        setSelectedJob(job)
+      })
+    } else {
+      setSelectedJob(job)
+    }
+  }
+
+  const closeJobModal = () => {
+    setJobModalOpen(false)
+    setSelectedJob(null)
+  }
+
+  const handleSaveJob = async (job) => {
+    setJobActionLoading(true)
+    setJobModalMessage('')
+    try {
+      await saveJob(job.job_id)
+      setJobModalMessage('Saved')
+    } catch (err) {
+      console.error('saveJob failed', err)
+      setJobModalMessage(String(err?.message || 'Failed to save job'))
+    } finally {
+      setJobActionLoading(false)
+    }
+  }
+
+  const handleApplyJob = async (job) => {
+    setJobActionLoading(true)
+    setJobModalMessage('')
+    try {
+      await applyJob(job.job_id)
+      setJobModalMessage('Marked as applied')
+    } catch (err) {
+      console.error('applyJob failed', err)
+      setJobModalMessage(String(err?.message || 'Failed to apply to job'))
+    } finally {
+      setJobActionLoading(false)
     }
   }
 
@@ -374,7 +429,15 @@ v-4.875c0-.621.504-1.125 1.125-1.125h2.25c.621 0 1.125.504 1.125 1.125V21h4.125c
             marginTop: '8px'
           }}>
             {filterJobs.map((job,index) => (
-              <JobCard key={job.job_id || index} job={job} formatSalary={formatSalary} onGenerateCover={() => handleGenerateCoverLetter(job)} />
+              <JobCard
+                key={job.job_id || index}
+                job={job}
+                formatSalary={formatSalary}
+                onView={() => openJobModal(job)}
+                onSave={() => handleSaveJob(job)}
+                onApply={() => handleApplyJob(job)}
+                onGenerateCover={() => handleGenerateCoverLetter(job)}
+              />
             ))}
           </section>
 
@@ -402,6 +465,35 @@ v-4.875c0-.621.504-1.125 1.125-1.125h2.25c.621 0 1.125.504 1.125 1.125V21h4.125c
             )
           })()}
     {/* Cover letter modal */}
+            {/* Job modal (View) */}
+            {jobModalOpen ? (
+              <div role="dialog" aria-modal="true" className="cover-modal-overlay" style={{position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.5)', display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 9999}} onClick={() => { if (!jobActionLoading) closeJobModal() }}>
+                <div className="cover-modal" style={{ background: '#fff', color: '#0b0b0b', maxWidth: 800, width: '95%', maxHeight: '90vh', overflow: 'auto', borderRadius: 8, padding: 18 }} onClick={(e) => e.stopPropagation()}>
+                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 12 }}>
+                    <h3 style={{ margin: 0 }}>{selectedJob?.title} — {selectedJob?.company}</h3>
+                    <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+                      <button onClick={() => { if (!jobActionLoading) closeJobModal() }}>Close</button>
+                    </div>
+                  </div>
+                  <div style={{ marginTop: 12 }}>
+                    <div style={{ color: 'var(--muted)' }}>{selectedJob?.location} {selectedJob?.type ? `• ${selectedJob?.type}` : ''}</div>
+                    <div style={{ marginTop: 12 }}>
+                      {selectedJob?.full_description || selectedJob?.description ? (
+                        <div style={{ lineHeight: 1.5 }} dangerouslySetInnerHTML={{ __html: DOMPurify.sanitize(selectedJob?.full_description || selectedJob?.description || '') }} />
+                      ) : null}
+                    </div>
+                    <div style={{ marginTop: 12, display: 'flex', gap: 8, justifyContent: 'flex-end' }}>
+                      <button onClick={() => handleSaveJob(selectedJob)} disabled={jobActionLoading}>Save</button>
+                      <button onClick={() => handleApplyJob(selectedJob)} disabled={jobActionLoading}>Apply</button>
+                      <button onClick={() => { if (!jobActionLoading) { closeJobModal(); handleGenerateCoverLetter(selectedJob); } }}>Cover Letter</button>
+                      <a href={selectedJob?.url || selectedJob?.url || '#'} target="_blank" rel="noreferrer"><button>Open Original</button></a>
+                    </div>
+                    {jobModalMessage ? (<div style={{ marginTop: 8, color: jobModalMessage.startsWith('Failed') ? 'crimson' : 'green' }}>{jobModalMessage}</div>) : null}
+                  </div>
+                </div>
+              </div>
+            ) : null}
+
             {coverModalOpen ? (
               <div role="dialog" aria-modal="true" className="cover-modal-overlay" style={{
                 position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.5)', display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 9999
@@ -465,7 +557,7 @@ v-4.875c0-.621.504-1.125 1.125-1.125h2.25c.621 0 1.125.504 1.125 1.125V21h4.125c
   )
 }
 
-function JobCard({job, formatSalary, onGenerateCover}) {
+function JobCard({job, formatSalary, onView, onSave, onApply, onGenerateCover}) {
   return (
     <div data-slot="card" className="bg-card text-card-foreground border" style={{padding: '12px 16px'}}>
       <div data-slot="card-header" style={{textAlign: 'left'}}>
@@ -490,9 +582,9 @@ function JobCard({job, formatSalary, onGenerateCover}) {
 
   <div data-slot="card-content">
         <div style={{ display:'flex', gap:8, justifyContent:'flex-end', paddingTop:6}}>
-          <a href={job.url || '#'}><button>View</button></a>
-          <button>Save</button>
-          <button>Apply</button>
+          <button onClick={() => onView && onView()}>View</button>
+          <button onClick={() => onSave && onSave()}>Save</button>
+          <button onClick={() => onApply && onApply()}>Apply</button>
           <button onClick={() => onGenerateCover && onGenerateCover()}>Cover Letter</button>
         </div>
       </div>

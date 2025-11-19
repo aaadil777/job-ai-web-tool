@@ -1,5 +1,7 @@
 import { useState, useEffect } from 'react'
-import { Link } from 'react-router-dom'
+import { Link, useNavigate } from 'react-router-dom'
+import { authRegister } from '../api/api'
+import { useAuth } from '../auth/AuthContext'
 import './jobAI.css'
 
 export default function CreateNewUser() {
@@ -15,6 +17,31 @@ export default function CreateNewUser() {
 
   const [showPassword, setShowPassword] = useState(false)
   const [showConfirm, setShowConfirm] = useState(false)
+  const [error, setError] = useState('')
+  const navigate = useNavigate()
+  const { login } = useAuth()
+
+  const handleSubmit = (e) => {
+    e.preventDefault()
+    setError('')
+    const form = e.currentTarget
+    const name = form.name.value.trim()
+    const email = form.email.value.trim()
+    const password = form.password.value
+    const confirm = form.confirm.value
+
+    if (!name) return setError('Enter your full name')
+    if (!email || !email.includes('@')) return setError('Enter a valid email')
+    if (!password || password.length < 8) return setError('Password must be at least 8 characters')
+    if (password !== confirm) return setError('Passwords do not match')
+
+    authRegister({ full_name: name, email, password }).then((data) => {
+      if (data && data.token) {
+        login({ token: data.token, user: data.user })
+        navigate('/resume_upload')
+      }
+    }).catch((err) => setError(String(err?.message || err || 'Registration failed')))
+  }
 
   return (
     <div>
@@ -35,7 +62,8 @@ export default function CreateNewUser() {
             Start automating your job hunt today.
           </p>
 
-          <form>
+          <form onSubmit={handleSubmit}>
+            {error ? <div style={{ color: 'crimson', marginBottom: 8 }}>{error}</div> : null}
             <label>
               <span className="sr-only">Full Name</span>
               <input
