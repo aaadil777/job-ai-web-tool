@@ -26,6 +26,7 @@ export default function MatchedAI() {
   const [selectedJob, setSelectedJob] = useState(null)
   const [filterAppliedButNoResults, setFilterAppliedButNoResults] = useState(false)
   const [unfilteredTotalResults, setUnfilteredTotalResults] = useState(null)
+  const [copyStatus, setCopyStatus] = useState('')
 
   const formatSalary = (val) => `$${Math.round((val || 0) / 1000)}k`
 
@@ -68,19 +69,19 @@ export default function MatchedAI() {
         ...j,
         experience: normalizeExperience(j.experience),
         skills: Array.isArray(j.skills) ? j.skills : (j.skills || []),
-        salaryMin: j.salaryMin || 0,
-        salaryMax: j.salaryMax || 0,
+        salaryMin: Number.isFinite(j.salaryMin) ? j.salaryMin : null,
+        salaryMax: Number.isFinite(j.salaryMax) ? j.salaryMax : null,
       }))
 
       setJobs(mapped)
 
       if (data) {
-        setPage(Number(data.page || 1))
-        setTotalResults(Number(data.totalResults || 0))
-        // Backend may include fallback info in _raw. Preserve that for UI hints.
-        const raw = data._raw || {}
-        setFilterAppliedButNoResults(Boolean(raw.filter_applied_but_no_results))
-        setUnfilteredTotalResults(raw.unfiltered_total_results || null)
+        setPage(Number(data.page || 1));
+        setTotalResults(Number((data.totalResults ?? data.total_results) || 0));
+        const raw = data._raw || {};
+        setFilterAppliedButNoResults(Boolean(raw.filter_applied_but_no_results));
+        setUnfilteredTotalResults(raw.unfiltered_total_results ?? null);
+
       }
 
       const rid = parseInt(localStorage.getItem('resume_id') || '', 10)
@@ -112,12 +113,13 @@ export default function MatchedAI() {
     setCoverModalError('')
     setCoverModalContent('')
     setCoverModalBullets([])
+    setCopyStatus('')
     setCoverModalOpen(true)
     setCoverModalLoading(true)
 
     try {
       const resumeId = Number(localStorage.getItem('resume_id') || 0) || undefined
-      const payload = { resume_id: resumeId, job_id: job.job_id, job }
+      const payload = { resume_id: resumeId, job_id: job.job_id, job, persist: false, match_score: job.score ?? job.matchScore ?? undefined }
       const data = await generateCoverLetter(payload)
       setCoverModalContent(data.cover_letter || data.coverLetter || '')
       setCoverModalBullets(Array.isArray(data.resume_bullets) ? data.resume_bullets : (data.resumeBullets || []))
@@ -133,8 +135,12 @@ export default function MatchedAI() {
     return jobs.filter((j) => {
       const jMin = j.salaryMin || 0
       const jMax = j.salaryMax || 0
+      const hasMin = jMin > 0
+      const hasMax = jMax > 0
+      const hasAnySalary = hasMin || hasMax
 
-  const passSalary = (jMax >= salaryMin) && (jMin <= salaryMax)
+      const passSalary = !hasAnySalary
+        || (hasMax && jMax >= salaryMin) && (!hasMin || jMin <= salaryMax)
 
       const jobExp = String(j.experience || '')
       const passExp = !experience || jobExp.toLowerCase() === experience.toLowerCase() || jobExp.toLowerCase() === 'unknown' || jobExp === ''
@@ -149,6 +155,32 @@ export default function MatchedAI() {
       return passSalary && passExp && passLoc
     })
   }, [jobs, experience, salaryMin, salaryMax, location])
+
+  const handleCopyToClipboard = async () => {
+    try {
+      await navigator.clipboard.writeText(coverModalContent || '')
+      setCopyStatus('copied')
+      setTimeout(() => setCopyStatus(''), 1500)
+    } catch {
+      setCopyStatus('error')
+      setTimeout(() => setCopyStatus(''), 1500)
+    }
+  }
+
+  const handleDownloadTxt = () => {
+    const text = coverModalContent || ''
+    const blob = new Blob([text], { type: 'text/plain;charset=utf-8' })
+    const url = URL.createObjectURL(blob)
+    const safeCompany = (selectedJob?.company || 'Company').replace(/[^\w.-]+/g, '_')
+    const safeTitle = (selectedJob?.title || 'Role').replace(/[^\w.-]+/g, '_')
+    const a = document.createElement('a')
+    a.href = url
+    a.download = `${safeCompany}-${safeTitle}-cover-letter.txt`
+    document.body.appendChild(a)
+    a.click()
+    a.remove()
+    URL.revokeObjectURL(url)
+  }
 
   return (
     <div>
@@ -225,7 +257,7 @@ v-4.875c0-.621.504-1.125 1.125-1.125h2.25c.621 0 1.125.504 1.125 1.125V21h4.125c
               <option value="Austin, TX" />
             </datalist>
 
-            <select name="type" className="filter-input" style={{ minWidth: '150px' }} value={type} onChange={(e) => { const v = e.target.value; setType(v); setPage(1); fetchJobs({ query: searchQuery, location, page: 1, resultsPerPage, salaryMin, salaryMax, type: v, experience }); }}>
+            <select name="type" className="filter-input" style={{ minWidth: '150px' }} value={type} onChange={(e) => { const v = e.target.value; setType(v); setPage(1); fetchJobs({ query: searchQuery, location, page: 1, resultsPerPage: RESULTS_PER_PAGE, salaryMin, salaryMax, type: v, experience }); }}>
               <option value="">Any type</option>
               <option>Full-time</option>
               <option>Part-time</option>
@@ -235,7 +267,7 @@ v-4.875c0-.621.504-1.125 1.125-1.125h2.25c.621 0 1.125.504 1.125 1.125V21h4.125c
               <option>Internship</option>
             </select>
 
-            <select name="exp" className="filter-input" style={{ minWidth: '140px' }} value={experience} onChange={(e) => { const v = e.target.value; setExp(v); setPage(1); fetchJobs({ query: searchQuery, location, page: 1, resultsPerPage, salaryMin, salaryMax, type, experience: v }); }}>
+            <select name="exp" className="filter-input" style={{ minWidth: '140px' }} value={experience} onChange={(e) => { const v = e.target.value; setExp(v); setPage(1); fetchJobs({ query: searchQuery, location, page: 1, resultsPerPage: RESULTS_PER_PAGE, salaryMin, salaryMax, type, experience: v }); }}>
               <option value="">Experience</option>
               <option>Entry</option>
               <option>Mid</option>
@@ -328,8 +360,8 @@ v-4.875c0-.621.504-1.125 1.125-1.125h2.25c.621 0 1.125.504 1.125 1.125V21h4.125c
                 </div>
               </div>
               <div style={{ display: 'flex', gap: 8 }}>
-                <button onClick={() => { setType(''); setExp(''); setPage(1); setFilterAppliedButNoResults(false); fetchJobs({ query: searchQuery, location, page: 1, resultsPerPage, salaryMin, salaryMax, type: '', experience: '' }); }} style={{ padding: '8px 10px', borderRadius: 8, border: '1px solid #c69500', background: '#fff', cursor: 'pointer' }}>Remove Type & Experience Filters</button>
-                <button onClick={() => { setType(''); setExp(''); setPage(1); setFilterAppliedButNoResults(false); fetchJobs({ query: searchQuery, location, page: 1, resultsPerPage, salaryMin, salaryMax, type: '', experience: '' }); }} style={{ padding: '8px 10px', borderRadius: 8, border: '1px solid #c69500', background: '#c69500', color: '#fff', cursor: 'pointer' }}>Show {unfilteredTotalResults ?? 'All'} Jobs</button>
+                <button onClick={() => { setType(''); setExp(''); setPage(1); setFilterAppliedButNoResults(false); fetchJobs({ query: searchQuery, location, page: 1, resultsPerPage: RESULTS_PER_PAGE, salaryMin, salaryMax, type: '', experience: '' }); }} style={{ padding: '8px 10px', borderRadius: 8, border: '1px solid #c69500', background: '#fff', cursor: 'pointer' }}>Remove Type & Experience Filters</button>
+                <button onClick={() => { setType(''); setExp(''); setPage(1); setFilterAppliedButNoResults(false); fetchJobs({ query: searchQuery, location, page: 1, resultsPerPage: RESULTS_PER_PAGE, salaryMin, salaryMax, type: '', experience: '' }); }} style={{ padding: '8px 10px', borderRadius: 8, border: '1px solid #c69500', background: '#c69500', color: '#fff', cursor: 'pointer' }}>Show {unfilteredTotalResults ?? 'All'} Jobs</button>
               </div>
             </div>
           ) : null}
@@ -377,9 +409,27 @@ v-4.875c0-.621.504-1.125 1.125-1.125h2.25c.621 0 1.125.504 1.125 1.125V21h4.125c
                 <div className="cover-modal" style={{ background: '#fff', color: '#0b0b0b', maxWidth: 800, width: '95%', maxHeight: '90vh', overflow: 'auto', borderRadius: 8, padding: 18 }} onClick={(e) => e.stopPropagation()}>
                   <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 12 }}>
                     <h3 style={{ margin: 0 }}>Cover Letter Preview</h3>
-                    <div style={{ display: 'flex', gap: 8 }}>
-                      <button onClick={() => { navigator.clipboard?.writeText(coverModalContent || '') }} disabled={!coverModalContent}>Copy</button>
-                      <button onClick={() => { if (!coverModalLoading) setCoverModalOpen(false) }}>Close</button>
+                    <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+                      <button
+                        onClick={handleCopyToClipboard}
+                        disabled={!coverModalContent}
+                        aria-live="polite"
+                        title="Copy to Clipboard"
+                      >
+                        {copyStatus === 'copied' ? 'Copied!' : copyStatus === 'error' ? 'Copy failed' : 'Copy to Clipboard'}
+                      </button>
+
+                      <button
+                        onClick={handleDownloadTxt}
+                        disabled={!coverModalContent}
+                        title="Download .txt"
+                      >
+                        Download .txt
+                      </button>
+
+                      <button onClick={() => { if (!coverModalLoading) setCoverModalOpen(false) }}>
+                        Close
+                      </button>
                     </div>
                   </div>
 

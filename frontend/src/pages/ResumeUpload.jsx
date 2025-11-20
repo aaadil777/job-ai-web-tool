@@ -95,6 +95,7 @@ export default function ResumeUpload() {
       if (!latest.ok) throw new Error(await latest.text())
       const data = await latest.json()
       setCurrent(data)
+      if (data?.resume_id) localStorage.setItem('resume_id', String(data.resume_id))
       if (fileRef.current) fileRef.current.value = ''
       setSelected(null)
     } catch (e) {
@@ -115,6 +116,7 @@ export default function ResumeUpload() {
       })
       if (res.status !== 204 && !res.ok) throw new Error(await res.text())
       setCurrent(null)
+      localStorage.removeItem('resume_id')
       if (fileRef.current) fileRef.current.value = ''
     } catch (e) {
       setErr(e.message || 'Delete failed.')
