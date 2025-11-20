@@ -1,4 +1,4 @@
-# streamlit_app.py  (or backend/streamlit_app.py depending on your repo layout)
+# streamlit_app.py
 
 import os
 from typing import List, Dict, Any
@@ -6,6 +6,7 @@ from typing import List, Dict, Any
 import requests
 import pandas as pd
 import streamlit as st
+import streamlit.components.v1 as components  # 👈 for iframe embedding
 
 # Optional: load .env for local dev
 try:
@@ -23,7 +24,31 @@ st.title("AI Job Hunter")
 st.caption("Search • Tailor • Apply • Track")
 
 # -------------------------------------------------
-# Config & helpers
+# Frontend config (Vite app URL)
+# -------------------------------------------------
+# Prefer Streamlit secrets, then env var, then hard-coded Render fallback
+FRONTEND_URL = (
+    st.secrets.get("FRONTEND_URL", None)
+    or os.getenv("FRONTEND_URL", "")
+).strip()
+
+if not FRONTEND_URL:
+    # Fallback – replace this with your actual Render static URL if different
+    FRONTEND_URL = "https://frontend-ar8v.onrender.com"
+
+FRONTEND_URL = FRONTEND_URL.rstrip("/")
+
+# Embed the Vite app inside Streamlit
+st.markdown("### Web app")
+components.iframe(
+    FRONTEND_URL,
+    height=1000,   # tweak if you want more/less height
+    scrolling=True,
+)
+st.divider()
+
+# -------------------------------------------------
+# Backend config & helpers (Flask API)
 # -------------------------------------------------
 
 # Prefer Streamlit secrets, then fall back to environment
@@ -43,8 +68,12 @@ def api_get(path: str, timeout: int = 30) -> Any:
     r.raise_for_status()
     return r.json()
 
-def api_post(path: str, json: Dict | None = None,
-             files: Dict | None = None, timeout: int = 90) -> Any:
+def api_post(
+    path: str,
+    json: Dict | None = None,
+    files: Dict | None = None,
+    timeout: int = 90,
+) -> Any:
     r = requests.post(_url(path), json=json, files=files, timeout=timeout)
     r.raise_for_status()
     return r.json()
@@ -69,6 +98,9 @@ else:
         "API_BASE is not set. Add API_BASE to .streamlit/secrets.toml "
         "or as an environment variable for local dev."
     )
+
+st.divider()
+st.markdown("### API playground (Streamlit client for debugging)")
 
 # -------------------------------------------------
 # Layout
@@ -165,65 +197,75 @@ st.divider()
 jobs: List[Dict[str, Any]] = st.session_state.get("jobs", [])
 
 if not jobs:
-    st.info("Paste links and click **Find roles** to see results.")
-    st.stop()
+    st.info("Paste links and click **Find roles** to see API results below.")
+else:
+    st.subheader("3) Results")
 
-st.subheader("3) Results")
+    df = pd.DataFrame(jobs)
+    if not df.empty:
+        # Show a compact table of core job info
+        cols_to_show = [
+            c
+            for c in [
+                "job_id",
+                "title",
+                "company",
+                "location",
+                "experience_level",
+                "type",
+            ]
+            if c in df.columns
+        ]
+        st.dataframe(df[cols_to_show], use_container_width=True)
 
-df = pd.DataFrame(jobs)
-if not df.empty:
-    # Show a compact table of core job info
-    cols_to_show = [c for c in ["job_id", "title", "company", "location", "experience_level", "type"] if c in df.columns]
-    st.dataframe(df[cols_to_show], use_container_width=True)
+    # Multiselect by job_id with label mapping
+    job_id_options = [j["job_id"] for j in jobs]
 
-# Multiselect by job_id with label mapping
-job_id_options = [j["job_id"] for j in jobs]
+    def _label_for_job(jid: int | str) -> str:
+        for j in jobs:
+            if j["job_id"] == jid:
+                name = j.get("title") or "Unknown title"
+                comp = j.get("company") or "Unknown company"
+                return f"{name} @ {comp}"
+        return str(jid)
 
-def _label_for_job(jid: int | str) -> str:
-    for j in jobs:
-        if j["job_id"] == jid:
-            name = j.get("title") or "Unknown title"
-            comp = j.get("company") or "Unknown company"
-            return f"{name} @ {comp}"
-    return str(jid)
+    selected_ids = st.multiselect(
+        "Select jobs to tailor",
+        options=job_id_options,
+        format_func=_label_for_job,
+    )
 
-selected_ids = st.multiselect(
-    "Select jobs to tailor",
-    options=job_id_options,
-    format_func=_label_for_job,
-)
+    can_generate = bool(
+        health_ok and selected_ids and st.session_state.get("resume_id")
+    )
 
-can_generate = bool(
-    health_ok and selected_ids and st.session_state.get("resume_id")
-)
+    if st.button("Generate tailored materials", disabled=not can_generate):
+        try:
+            payload = {
+                "resume_id": st.session_state["resume_id"],
+                "job_ids": selected_ids,
+            }
+            resp = api_post("/api/recommend", json=payload, timeout=180)
 
-if st.button("Generate tailored materials", disabled=not can_generate):
-    try:
-        payload = {
-            "resume_id": st.session_state["resume_id"],
-            "job_ids": selected_ids,
-        }
-        resp = api_post("/api/recommend", json=payload, timeout=180)
+            st.success("Tailored materials generated.")
+            for r in resp.get("results", []):
+                title = r.get("title", "Unknown role")
+                company = r.get("company", "Unknown company")
+                score = r.get("score", "?")
+                header = f"{title} — {company} (score {score})"
 
-        st.success("Tailored materials generated.")
-        for r in resp.get("results", []):
-            title = r.get("title", "Unknown role")
-            company = r.get("company", "Unknown company")
-            score = r.get("score", "?")
-            header = f"{title} — {company} (score {score})"
-
-            with st.expander(header):
-                if r.get("matched_skills"):
-                    st.write("Matched skills:", ", ".join(r["matched_skills"]))
-                if r.get("gaps"):
-                    st.write("Skill gaps:", ", ".join(r["gaps"]))
-                if r.get("resume_bullets"):
-                    st.markdown(
-                        "**Suggested resume bullets:**\n\n"
-                        + "\n".join(f"- {b}" for b in r["resume_bullets"])
-                    )
-                if r.get("cover_letter"):
-                    st.markdown("**Cover letter draft:**")
-                    st.code(r["cover_letter"])
-    except Exception as e:
-        st.error(f"Recommend failed: {e}")
+                with st.expander(header):
+                    if r.get("matched_skills"):
+                        st.write("Matched skills:", ", ".join(r["matched_skills"]))
+                    if r.get("gaps"):
+                        st.write("Skill gaps:", ", ".join(r["gaps"]))
+                    if r.get("resume_bullets"):
+                        st.markdown(
+                            "**Suggested resume bullets:**\n\n"
+                            + "\n".join(f"- {b}" for b in r["resume_bullets"])
+                        )
+                    if r.get("cover_letter"):
+                        st.markdown("**Cover letter draft:**")
+                        st.code(r["cover_letter"])
+        except Exception as e:
+            st.error(f"Recommend failed: {e}")
