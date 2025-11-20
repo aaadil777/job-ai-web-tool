@@ -84,6 +84,19 @@ function canonicalizeType(t) {
 // Example API methods
 // --------------------
 
+// Module-level auth token. Prefer this when set by the application (AuthContext)
+// to avoid relying on localStorage at call-time and to make the helpers
+// testable and deterministic.
+let authToken = null
+
+export function setAuthToken(t) {
+  authToken = t || null
+}
+
+function getToken() {
+  return authToken ?? (typeof localStorage !== 'undefined' ? localStorage.getItem('token') : null)
+}
+
 // Check backend health
 export async function getHealth() {
   const res = await fetch(`${API_BASE}/health`); // ex: http://localhost:5000/api/health
@@ -224,10 +237,16 @@ export async function matchResumeToJob(payload = {}) {
   return data;
 }
 
+// Fetch a single job by ID
+export async function getJob(jobId) {
+  const res = await fetch(`${API_BASE}/jobs/${jobId}`)
+  return handleResponse(res)
+}
+
 // Generate a cover letter for a resume/job pair. Returns { cover_letter, resume_bullets }
 // payload: same shape as matchResumeToJob
 export async function generateCoverLetter(payload) {
-  const res = await fetch(`${API_BASE}/cover_letter`, {
+  const res = await fetch(`${API_BASE}/ai/cover-letter`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(payload),
@@ -244,4 +263,71 @@ export async function generateCoverLetter(payload) {
       : (Array.isArray(data.resumeBullets) ? data.resumeBullets : []),
     _raw: data,
   };
+}
+
+// Save a job for the current user
+export async function saveJob(jobId, notes = '') {
+  const token = getToken()
+  const headers = { 'Content-Type': 'application/json' }
+  if (token) headers['Authorization'] = `Bearer ${token}`
+  const res = await fetch(`${API_BASE}/users/me/saved-jobs`, {
+    method: 'POST',
+    headers,
+    body: JSON.stringify({ job_id: jobId, notes }),
+  });
+  return handleResponse(res);
+}
+
+// Mark a job as applied for the current user
+export async function applyJob(jobId) {
+  const token = getToken()
+  const headers = { 'Content-Type': 'application/json' }
+  if (token) headers['Authorization'] = `Bearer ${token}`
+  const res = await fetch(`${API_BASE}/users/me/applied-jobs`, {
+    method: 'POST',
+    headers,
+    body: JSON.stringify({ job_id: jobId }),
+  });
+  return handleResponse(res);
+}
+
+// Register a new user
+export async function authRegister(payload) {
+  const res = await fetch(`${API_BASE}/auth/register`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(payload),
+  })
+  return handleResponse(res)
+}
+
+// Login
+export async function authLogin(payload) {
+  const res = await fetch(`${API_BASE}/auth/login`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(payload),
+  })
+  return handleResponse(res)
+}
+
+// Get saved jobs for current user
+export async function getSavedJobs() {
+  const token = getToken()
+  const headers = { 'Content-Type': 'application/json' }
+  if (token) headers['Authorization'] = `Bearer ${token}`
+  const res = await fetch(`${API_BASE}/users/me/saved-jobs`, { headers })
+  return handleResponse(res)
+}
+
+// Delete a saved job
+export async function deleteSavedJob(jobId) {
+  const token = getToken()
+  const headers = { 'Content-Type': 'application/json' }
+  if (token) headers['Authorization'] = `Bearer ${token}`
+  const res = await fetch(`${API_BASE}/users/me/saved-jobs/${jobId}`, {
+    method: 'DELETE',
+    headers,
+  })
+  return handleResponse(res)
 }
