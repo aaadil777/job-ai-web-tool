@@ -27,6 +27,9 @@ from werkzeug.exceptions import HTTPException
 
 # Gemini
 import google.generativeai as genai
+import bcrypt
+import jwt
+from datetime import timedelta
 
 # -----------------------------
 # Env & app
@@ -135,6 +138,21 @@ def _get_user_id():
     """
     Grab user id for the authenticated user.
     """
+    # Prefer Authorization: Bearer <token> (JWT). Fall back to X-User-Id header (dev/testing).
+    auth = request.headers.get("Authorization") or request.headers.get("authorization")
+    if auth and auth.startswith("Bearer "):
+        token = auth.split(None, 1)[1].strip()
+        try:
+            payload = jwt.decode(token, JWT_SECRET, algorithms=[JWT_ALGO])
+            uid = payload.get("user_id")
+            try:
+                return int(uid) if uid is not None else None
+            except Exception:
+                return None
+        except Exception:
+            # invalid token — fall back to X-User-Id below
+            pass
+
     h = request.headers.get("X-User-Id")
     try:
         return int(h) if h is not None else None
@@ -834,6 +852,137 @@ def _canonicalize_experience_input(s: str) -> str:
     return ""
 
 
+# -----------------------------
+# Authentication endpoints
+# -----------------------------
+@app.post("/api/auth/register")
+def auth_register():
+    data = request.get_json(force=True) or {}
+    full_name = (data.get("full_name") or data.get("name") or "").strip()
+    email = (data.get("email") or "").strip().lower()
+    password = data.get("password") or ""
+
+    # Basic validation
+    if not full_name:
+        return bad("Missing 'full_name'")
+    if not email or "@" not in email:
+        return bad("Provide a valid email address")
+    if not password or len(password) < 8:
+        return bad("Password must be at least 8 characters")
+
+    db, cursor = get_db()
+
+    # Check uniqueness
+    if db:
+        try:
+            cursor.execute("SELECT id FROM users WHERE email=%s", (email,))
+            if cursor.fetchone():
+                return bad("Email already registered", 409)
+        except Exception as e:
+            app.logger.exception(e)
+
+    else:
+        MEM.setdefault("users", {})
+        # case-insensitive check
+        for u in MEM["users"].values():
+            if (u.get("email") or "").lower() == email:
+                return bad("Email already registered", 409)
+
+    # Hash password with bcrypt
+    try:
+        hashed = bcrypt.hashpw(password.encode('utf-8'), bcrypt.gensalt()).decode('utf-8')
+    except Exception as e:
+        app.logger.exception(e)
+        return bad("Failed to hash password", 500)
+
+    # Insert user
+    if db:
+        try:
+            cursor.execute(
+                "INSERT INTO users (full_name, email, password_hash) VALUES (%s, %s, %s)",
+                (full_name, email, hashed),
+            )
+            cursor.execute("SELECT LAST_INSERT_ID() AS id")
+            uid = cursor.fetchone()["id"]
+            db.commit()
+            # Optionally ensure user_profiles exists (schema trigger should create it)
+            cursor.execute("SELECT id, full_name, email, role FROM users WHERE id=%s", (uid,))
+            row = cursor.fetchone()
+            user_obj = {"user_id": row["id"], "name": row["full_name"], "email": row["email"], "role": row.get("role")}
+        except Exception as e:
+            app.logger.exception(e)
+            return bad("Failed to create user", 500)
+    else:
+        uid = MEM.get("next_user_id", 1)
+        MEM["next_user_id"] = uid + 1
+        MEM.setdefault("users", {})
+        MEM["users"][uid] = {"id": uid, "full_name": full_name, "email": email, "password_hash": hashed, "role": "jobseeker"}
+        # create profile placeholder
+        MEM.setdefault("user_profiles", {})
+        MEM["user_profiles"][uid] = {"user_id": uid}
+        user_obj = {"user_id": uid, "name": full_name, "email": email, "role": "jobseeker"}
+
+    # Issue JWT (7 day expiry)
+    try:
+        exp = datetime.now(timezone.utc) + timedelta(days=7)
+        token = jwt.encode({"user_id": user_obj.get("user_id"), "exp": int(exp.timestamp())}, JWT_SECRET, algorithm=JWT_ALGO)
+    except Exception as e:
+        app.logger.exception(e)
+        return bad("Failed to create token", 500)
+
+    return ok({"token": token, "user": user_obj})
+
+
+@app.post("/api/auth/login")
+def auth_login():
+    data = request.get_json(force=True) or {}
+    email = (data.get("email") or "").strip().lower()
+    password = data.get("password") or ""
+
+    if not email or not password:
+        return bad("Provide 'email' and 'password'")
+
+    db, cursor = get_db()
+    user_row = None
+    if db:
+        try:
+            cursor.execute("SELECT id, full_name, email, password_hash, role FROM users WHERE email=%s", (email,))
+            row = cursor.fetchone()
+            if not row:
+                return bad("Invalid credentials", 401)
+            user_row = row
+            stored = row.get("password_hash")
+        except Exception as e:
+            app.logger.exception(e)
+            return bad("Error during authentication", 500)
+    else:
+        for uid, u in (MEM.get("users") or {}).items():
+            if (u.get("email") or "").lower() == email:
+                user_row = u
+                stored = u.get("password_hash")
+                break
+        if not user_row:
+            return bad("Invalid credentials", 401)
+
+    # Verify password
+    try:
+        if not stored or not bcrypt.checkpw(password.encode('utf-8'), stored.encode('utf-8')):
+            return bad("Invalid credentials", 401)
+    except Exception:
+        return bad("Invalid credentials", 401)
+
+    user_obj = {"user_id": user_row.get("id") or user_row.get("user_id"), "name": user_row.get("full_name") or user_row.get("full_name"), "email": user_row.get("email"), "role": user_row.get("role")}
+
+    try:
+        exp = datetime.now(timezone.utc) + timedelta(days=7)
+        token = jwt.encode({"user_id": user_obj.get("user_id"), "exp": int(exp.timestamp())}, JWT_SECRET, algorithm=JWT_ALGO)
+    except Exception as e:
+        app.logger.exception(e)
+        return bad("Failed to create token", 500)
+
+    return ok({"token": token, "user": user_obj})
+
+
 # POST /api/jobs/search { "inputs": ["https://...", "data analyst chicago", ...] }
 @app.post("/api/jobs/search")
 def jobs_search():
@@ -1198,6 +1347,55 @@ def job_recommend_mock():
     })
 
 
+@app.get('/api/jobs/<int:job_id>')
+def get_job(job_id: int):
+    """
+    Return job details by job_id. Tries DB first, otherwise falls back to in-memory store.
+    """
+    db, cursor = get_db()
+    if db:
+        try:
+            cursor.execute(
+                "SELECT job_id, title, company_name AS company, description, location, url, salary_range, source, type FROM jobs WHERE job_id=%s",
+                (job_id,),
+            )
+            row = cursor.fetchone()
+            if row:
+                # Normalize to the frontend-friendly shape
+                return ok({
+                    "job_id": row.get("job_id"),
+                    "title": row.get("title"),
+                    "company": row.get("company"),
+                    "location": row.get("location"),
+                    "description": (row.get("description") or "")[:JOB_DESCRIPTION_MAX_CHARS],
+                    "full_description": row.get("description") or "",
+                    "url": row.get("url"),
+                    "salary_range": row.get("salary_range"),
+                    "type": row.get("type") or "",
+                    "source": row.get("source"),
+                })
+        except Exception as e:
+            app.logger.exception(e)
+
+    # memory fallback
+    j = MEM.get("jobs", {}).get(job_id)
+    if j:
+        return ok({
+            "job_id": job_id,
+            "title": j.get("title"),
+            "company": j.get("company"),
+            "location": j.get("location"),
+            "description": (j.get("description") or "")[:JOB_DESCRIPTION_MAX_CHARS],
+            "full_description": j.get("full_description") or j.get("description") or "",
+            "url": j.get("url"),
+            "salary_range": j.get("salary_range"),
+            "type": j.get("type") or "",
+            "source": j.get("source") or "",
+        })
+
+    return bad("Not found", 404)
+
+
 # -----------------------------
 # Chat endpoint for landing page
 # -----------------------------
@@ -1235,7 +1433,12 @@ def chat():
 
 ## User Profile Endpoints (GET / PUT)
 def _get_current_user_id():
-    """Helper to extract the current user ID from headers (temporary mock auth)."""
+    """Helper to extract the current user ID from headers (temporary mock auth).
+
+    NOTE: legacy helper — routes should prefer `_get_user_id()` which supports
+    Authorization: Bearer <token> (JWT) and falls back to X-User-Id. We keep this
+    function for backward compatibility but prefer `_get_user_id()` in new code.
+    """
     uid = request.headers.get("X-User-Id")
     if not uid:
         return None
@@ -1247,10 +1450,15 @@ def _get_current_user_id():
 
 @app.get("/api/users/me")
 def get_user_profile():
-    """Fetch current user's profile data (names mapped for UI)."""
-    user_id = _get_current_user_id()
+    """Fetch current user's profile data (names mapped for UI).
+
+    This endpoint requires authentication. Prefer JWT via Authorization: Bearer
+    header — `_get_user_id()` will extract and verify it. Fall back to
+    X-User-Id for local/dev convenience.
+    """
+    user_id = _get_user_id()
     if not user_id:
-        return bad("Unauthorized: missing X-User-Id header", 401)
+        return bad("Unauthorized", 401)
 
     db, cursor = get_db()
     if not db:
@@ -1309,9 +1517,9 @@ def get_user_profile():
 @app.put("/api/users/me/profile")
 def update_user_profile():
     """Update the current user's profile fields (keys aligned with UI)."""
-    user_id = _get_current_user_id()
+    user_id = _get_user_id()
     if not user_id:
-        return bad("Unauthorized: missing X-User-Id header", 401)
+        return bad("Unauthorized", 401)
 
     data = request.get_json(force=True) or {}
 
@@ -1374,7 +1582,7 @@ def update_user_profile():
 # Saved Jobs endpoints
 @app.get("/api/users/me/saved-jobs")
 def get_saved_jobs():
-    user_id = _get_current_user_id()
+    user_id = _get_user_id()
     if not user_id:
         return bad("Unauthorized", 401)
 
@@ -1397,7 +1605,7 @@ def get_saved_jobs():
 
 @app.post("/api/users/me/saved-jobs")
 def save_job():
-    user_id = _get_current_user_id()
+    user_id = _get_user_id()
     if not user_id:
         return bad("Unauthorized", 401)
 
@@ -1425,7 +1633,7 @@ def save_job():
 
 @app.delete("/api/users/me/saved-jobs/<int:job_id>")
 def delete_saved_job(job_id):
-    user_id = _get_current_user_id()
+    user_id = _get_user_id()
     if not user_id:
         return bad("Unauthorized", 401)
 
@@ -1445,7 +1653,7 @@ def delete_saved_job(job_id):
 ## Applied Jobs Endpoints
 @app.post("/api/users/me/applied-jobs")
 def apply_to_job():
-    user_id = _get_current_user_id()
+    user_id = _get_user_id()
     if not user_id:
         return bad("Unauthorized", 401)
 
@@ -1470,7 +1678,7 @@ def apply_to_job():
 
 @app.get("/api/users/me/applied-jobs")
 def get_applied_jobs():
-    user_id = _get_current_user_id()
+    user_id = _get_user_id()
     if not user_id:
         return bad("Unauthorized", 401)
 
@@ -1603,6 +1811,16 @@ def generate_cover_letter_api():
         "cover_letter": cover_letter_text,
         "resume_bullets": resume_bullets
     })
+
+
+@app.post("/api/ai/cover-letter")
+def api_ai_cover_letter():
+    """
+    Backwards-compatible wrapper that exposes the same behavior under
+    `/api/ai/cover-letter` — frontends may call this path.
+    """
+    # Delegate to the existing implementation which reads from request.json
+    return generate_cover_letter_api()
 
 # -----------------------------
 # Main
