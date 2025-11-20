@@ -1,0 +1,76 @@
+{
+  "info": {
+    "name": "JobHunter.ai API Collection",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+  },
+  "item": [
+    {
+      "name": "Auth - Register",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "url": "{{baseURL}}/api/auth/register",
+        "body": {
+          "mode": "raw",
+          "raw": "{\"full_name\": \"Test User\", \"email\": \"test@example.com\", \"password\": \"password123\"}"
+        }
+      }
+    },
+    {
+      "name": "Auth - Login",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "url": "{{baseURL}}/api/auth/login",
+        "body": {
+          "mode": "raw",
+          "raw": "{\"email\": \"test@example.com\", \"password\": \"password123\"}"
+        }
+      }
+    },
+    {
+      "name": "Get User Profile",
+      "request": {
+        "method": "GET",
+        "header": [
+          {
+            "key": "Authorization",
+            "value": "Bearer {{token}}"
+          }
+        ],
+        "url": "{{baseURL}}/api/users/me"
+      }
+    },
+    {
+      "name": "Update User Profile",
+      "request": {
+        "method": "PUT",
+        "header": [
+          {
+            "key": "Authorization",
+            "value": "Bearer {{token}}"
+          },
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "url": "{{baseURL}}/api/users/me/profile",
+        "body": {
+          "mode": "raw",
+          "raw": "{\"name\": \"Updated Name\", \"title\": \"Updated Title\", \"email\": \"updated@example.com\", \"location\": \"New York, NY\", \"phone\": \"123-456-7890\", \"job_preferences\": {\"locations\": [\"Remote\"], \"type\": \"Full-time\"}, \"desired_salary\": 90000}"
+        }
+      }
+    }
+  ]
+}
