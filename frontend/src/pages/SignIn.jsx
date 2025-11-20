@@ -1,5 +1,7 @@
 import { useState, useEffect } from 'react'
 import { Link, useNavigate } from 'react-router-dom'
+import { authLogin } from '../api/api'
+import { useAuth } from '../auth/AuthContext'
 import './jobAI.css'
 
 export default function SignIn() {
@@ -15,11 +17,23 @@ export default function SignIn() {
 
   const navigate = useNavigate()
   const [showPassword, setShowPassword] = useState(false)
+  const { login } = useAuth()
+  const [error, setError] = useState('')
 
   const handleSubmit = (e) => {
     e.preventDefault()
-    // Add authentication logic here
-    navigate('/resume_upload')
+    setError('')
+    const form = e.currentTarget
+    const email = form.email.value.trim()
+    const password = form.password.value
+    authLogin({ email, password }).then((data) => {
+      if (data && data.token) {
+        login({ token: data.token, user: data.user })
+        navigate('/resume_upload')
+      }
+    }).catch((err) => {
+      setError(String(err?.message || err || 'Login failed'))
+    })
   }
 
   return (
@@ -42,6 +56,7 @@ export default function SignIn() {
           </p>
 
           <form onSubmit={handleSubmit}>
+            {error ? <div style={{ color: 'crimson', marginBottom: 8 }}>{error}</div> : null}
             <label>
               <span className="sr-only">Email</span>
               <input
